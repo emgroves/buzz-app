@@ -42,9 +42,10 @@ publication uses a signed kind:0 event and requires a matching accepted receipt
 and current profile readback before the client saves the completed membership.
 Rejected setup retains input and does not replace the currently selected community.
 An admitted invite is a remote side effect and is not undone if later profile
-setup fails or is cancelled. A newly admitted member's sidebar already lists the
-community's default channels and Messages opens the first of them; see
-[local-first launch](channels.md#local-first-launch).
+setup fails or is cancelled. A member newly admitted by an invite claim already has
+the community's default channels in the sidebar, and Messages opens the first of
+them. In an open community, which needs no claim, neither the relay nor the
+client joins them. See [local-first launch](channels.md#local-first-launch).
 
 Profile editing preserves existing fields that this editor does not expose.
 After a confirmed Settings save, the profile also becomes the device-local
