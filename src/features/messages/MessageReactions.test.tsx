@@ -39,19 +39,59 @@ const viewer = keypair(),
   other = keypair(),
   relay = keypair();
 const owners: { dispose(): void }[] = [];
+const observers = new Set<{
+  callback: IntersectionObserverCallback;
+  rows: Set<Element>;
+}>();
 beforeEach(() => {
   // jsdom hides [popover] but does not implement showPopover. Model opening
   // for content assertions; browser tests cover top-layer painting and clipping.
   HTMLElement.prototype.showPopover = function () {
     this.style.display = "block";
   };
+  // jsdom has no layout: tests decide which reactor rows scroll into view.
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      rows = new Set<Element>();
+      constructor(readonly callback: IntersectionObserverCallback) {
+        observers.add(this);
+      }
+      observe(row: Element) {
+        this.rows.add(row);
+      }
+      unobserve(row: Element) {
+        this.rows.delete(row);
+      }
+      disconnect() {
+        observers.delete(this);
+      }
+    },
+  );
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
+  observers.clear();
   Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
   for (const owner of owners.splice(0)) owner.dispose();
   localStorage.clear();
 });
+/** Scrolls these rows of the full reaction list into view. */
+function reveal(rows: readonly Element[]) {
+  act(() => {
+    for (const observer of [...observers])
+      observer.callback(
+        rows
+          .filter((row) => observer.rows.has(row))
+          .map(
+            (target) =>
+              ({ target, isIntersecting: true }) as IntersectionObserverEntry,
+          ),
+        observer as unknown as IntersectionObserver,
+      );
+  });
+}
 const registry = <T,>(
   entries: ReturnType<ContributionReader<T>["snapshot"]>,
 ): ContributionReader<T> => ({
@@ -255,7 +295,7 @@ it.each([
   },
 );
 
-it("lists everyone in a grouped reaction and opens a chosen profile", async () => {
+it("lists everyone in a grouped reaction, loading names as rows scroll in", async () => {
   const named = keypair(),
     blocked = keypair(),
     agent = keypair();
@@ -293,17 +333,21 @@ it("lists everyone in a grouped reaction and opens a chosen profile", async () =
   const list = await screen.findByRole("menu", {
     name: "Everyone who reacted with 👍",
   });
-  // The preview loads three profiles; the list loads everyone else's too.
-  // Profile reads run one at a time, so answer each as it is issued.
+  const items = within(list).getAllByRole("menuitem");
   const expected = ["You", ...people.map((_, index) => `Person ${index}`)];
-  const resolved = () =>
-    expected.every(
-      (name) => within(list).queryAllByRole("menuitem", { name }).length === 1,
-    );
-  for (let read = 0; read < 10 && !resolved(); read++)
-    await act(async () => {
-      for (const entry of h.wire.pending)
-        if (entry.filters[0]?.kinds?.includes(0))
+  expect(items).toHaveLength(expected.length);
+  const profileReads = () =>
+    h.wire.pending.filter((entry) => entry.filters[0]?.kinds?.includes(0));
+  // Profile reads run one at a time, so answer each as it is issued.
+  const resolve = async (names: readonly string[]) => {
+    const resolved = () =>
+      names.every(
+        (name) =>
+          within(list).queryAllByRole("menuitem", { name }).length === 1,
+      );
+    for (let read = 0; read < 10 && !resolved(); read++)
+      await act(async () => {
+        for (const entry of profileReads())
           entry.respond(
             people.flatMap((person, index) =>
               entry.filters[0]?.authors?.includes(person.pubkey)
@@ -311,23 +355,95 @@ it("lists everyone in a grouped reaction and opens a chosen profile", async () =
                 : [],
             ),
           );
-      await flush();
-    });
-  const items = within(list).getAllByRole("menuitem");
-  expect(items).toHaveLength(expected.length);
+        await flush();
+      });
+    expect(resolved()).toBe(true);
+  };
+  reveal(items.slice(0, 5));
+  await resolve(expected.slice(0, 5));
+  // Rows out of view load nothing until they scroll in.
+  const requested = profileReads().flatMap(
+    (entry) => entry.filters[0]?.authors ?? [],
+  );
+  for (const person of people.slice(4))
+    expect(requested).not.toContain(person.pubkey);
+  reveal(items.slice(5));
+  await resolve(expected);
   for (const [index, name] of expected.entries())
     expect(within(list).getByRole("menuitem", { name })).toBe(items[index]);
-  expect(items[2]?.getAttribute("aria-disabled")).toBe("true");
+  const [, human, refused, agentRow] = items;
+  if (!human || !refused || !agentRow) throw new Error("Expected reactor rows");
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  fireEvent.click(refused);
+  expect(onOpenLink).not.toHaveBeenCalled();
   expect(
-    items[3]
-      ?.querySelector("[data-avatar-shape]")
+    agentRow
+      .querySelector("[data-avatar-shape]")
       ?.getAttribute("data-avatar-shape"),
   ).toBe("squircle");
-  const chosen = items[1];
-  if (!chosen) throw new Error("Expected a reactor row");
-  fireEvent.click(chosen);
-  expect(onOpenLink).toHaveBeenCalledWith(profileTarget(named.pubkey));
+  fireEvent.click(agentRow);
+  expect(onOpenLink).toHaveBeenCalledExactlyOnceWith(
+    profileTarget(agent.pubkey, { agent: true }),
+  );
+  expect(onOpenLink.mock.calls[0]?.[0]).toMatch(/^buzz:agent-profile:/);
   await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  fireEvent.click(
+    within(
+      await screen.findByRole("dialog", { name: "👍 reactions" }),
+    ).getByRole("button", { name: "and 8 others" }),
+  );
+  fireEvent.click(
+    within(await screen.findByRole("menu")).getByRole("menuitem", {
+      name: "Person 0",
+    }),
+  );
+  expect(onOpenLink).toHaveBeenLastCalledWith(profileTarget(named.pubkey));
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+});
+
+it("says when names in the full list could not load and retries on reopening", async () => {
+  const people = Array.from({ length: 9 }, () => keypair());
+  const h = harness(people.map((person, index) => react(person, 2 + index)));
+  render(<h.Controls />);
+  const group = screen.getByRole("button", { name: "👍: 9 people" });
+  const last = people.at(-1)?.pubkey ?? "";
+  const reads = () =>
+    h.wire.pending.filter((entry) => entry.filters[0]?.authors?.includes(last));
+  // Profile reads run one at a time: answer the preview's until the list's runs.
+  const open = async (count: number) => {
+    const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
+    fireEvent.click(
+      within(preview).getByRole("button", { name: "and 6 others" }),
+    );
+    const list = await screen.findByRole("menu");
+    reveal(within(list).getAllByRole("menuitem"));
+    for (let read = 0; read < 10 && reads().length < count; read++)
+      await act(async () => {
+        for (const entry of h.wire.pending)
+          if (
+            entry.filters[0]?.kinds?.includes(0) &&
+            !entry.filters[0].authors?.includes(last)
+          )
+            entry.respond([]);
+        await flush();
+      });
+    expect(reads()).toHaveLength(count);
+    return list;
+  };
+  act(() => group.focus());
+  const list = await open(1);
+  await act(async () => {
+    reads()[0]?.fail(new Error("Profiles offline"));
+    await flush();
+  });
+  expect(within(list).getByRole("alert").textContent).toBe(
+    "Some names could not load. Reopen this list to try again.",
+  );
+  expect(within(list).getAllByRole("menuitem")).toHaveLength(9);
+  fireEvent.keyDown(list, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  await open(2);
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("reaches the full list by keyboard and returns to the emoji on Escape", async () => {
@@ -353,6 +469,8 @@ it("reaches the full list by keyboard and returns to the emoji on Escape", async
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   await waitFor(() => expect(document.activeElement).toBe(group));
+  // Escape closes one layer: back on the emoji, its preview opens again.
+  await screen.findByRole("dialog", { name: "👍 reactions" });
   expect(onOpenLink).not.toHaveBeenCalled();
   expect(h.session.outbox?.snapshot()).toHaveLength(0);
 });
@@ -368,6 +486,9 @@ it("closes the full list without dropping focus when the group splits", async ()
   fireEvent.click(within(preview).getByRole("button", { name: "and 1 other" }));
   const list = await screen.findByRole("menu");
   await waitFor(() => expect(list.contains(document.activeElement)).toBe(true));
+  // A host that opens no profiles lists names without marking them unavailable.
+  for (const item of within(list).getAllByRole("menuitem"))
+    expect(item.hasAttribute("data-disabled")).toBe(false);
   // Everyone but the last reactor leaves at once, so the group becomes one emoji.
   act(() =>
     h.live.receive(

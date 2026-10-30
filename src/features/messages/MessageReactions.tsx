@@ -1,6 +1,8 @@
 import { useConversationPresentation } from "../conversation/ConversationPresentation";
 import {
   type CSSProperties,
+  type RefObject,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,6 +14,7 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { PreviewCard } from "../../shared/design-system/ui/PreviewCard";
 import {
   MenuItem,
+  MenuNote,
   MenuPopup,
   MenuRoot,
 } from "../../shared/design-system/ui/Menu";
@@ -239,6 +242,105 @@ function ReactionGlyph({
   );
 }
 
+/** Everyone in a grouped reaction, mounted only with its list. A group can
+ * outgrow the profile directory's request budget, and loading everyone would
+ * evict names the timeline shows: load names as rows near the visible area. */
+function ReactorItems({
+  popup,
+  people,
+  session,
+  profiles,
+  agentPubkeys,
+  onOpenLink,
+  canOpenLink,
+}: Reactors & {
+  popup: RefObject<HTMLDivElement | null>;
+  people: readonly string[];
+  session: RelaySession;
+}) {
+  const requested = useRef(new Set<string>());
+  const [failed, setFailed] = useState(false);
+  // Show any names already loaded; request only the rows that come into view.
+  const selection = useMemo(
+    () => selectProfiles(session.profiles, people),
+    [session.profiles, people],
+  );
+  const loaded = useSyncExternalStore(
+    selection.subscribe,
+    selection.snapshot,
+    selection.snapshot,
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: people adds rows to observe.
+  useEffect(() => {
+    const root = popup.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const page = entries.flatMap(({ isIntersecting, target }) => {
+          const id = (target as HTMLElement).dataset.reactor;
+          if (!isIntersecting || !id || requested.current.has(id)) return [];
+          requested.current.add(id);
+          observer.unobserve(target);
+          return [id];
+        });
+        if (!page.length) return;
+        session.profiles
+          .ensure(page, "background")
+          .catch(() => setFailed(true));
+      },
+      // The visible rows and the next screenful, far below the request budget.
+      { root, rootMargin: "100% 0px" },
+    );
+    for (const row of root.querySelectorAll<HTMLElement>("[data-reactor]"))
+      if (!requested.current.has(row.dataset.reactor ?? ""))
+        observer.observe(row);
+    return () => observer.disconnect();
+  }, [popup, people, session]);
+  return (
+    <>
+      {failed && (
+        <MenuNote role="alert">
+          Some names could not load. Reopen this list to try again.
+        </MenuNote>
+      )}
+      {people.map((authorId) => {
+        const profile = loaded.get(authorId) ?? profiles?.get(authorId);
+        const name =
+          authorId === session.viewer
+            ? "You"
+            : (profile?.name ?? authorId.slice(0, 10));
+        const agent = !!agentPubkeys?.has(authorId);
+        const target = profileTarget(authorId, { agent });
+        const destination =
+          target && canOpenLink?.(target) ? target : undefined;
+        return (
+          <MenuItem
+            key={authorId}
+            data-reactor={authorId}
+            // A host without profile destinations leaves every row enabled:
+            // nothing here is unavailable, and choosing one closes the list.
+            disabled={!!canOpenLink && !destination}
+            onClick={() => destination && onOpenLink?.(destination)}
+          >
+            <ChoiceRow
+              leading={
+                <Avatar
+                  alt=""
+                  fallback={profile?.name ?? name}
+                  src={avatarMedia(profile?.picture, session.media)}
+                  size="small"
+                  shape={agent || profile?.isAgent ? "squircle" : "circle"}
+                />
+              }
+              label={name}
+            />
+          </MenuItem>
+        );
+      })}
+    </>
+  );
+}
+
 function ReactionEmoji({
   reaction,
   authorIds,
@@ -278,9 +380,8 @@ function ReactionEmoji({
   const emojiAnchor = useRef<HTMLSpanElement>(null);
   const pill = useRef<HTMLButtonElement>(null);
   const othersButton = useRef<HTMLButtonElement>(null);
+  const listPopup = useRef<HTMLDivElement>(null);
   const [listOpen, setListOpen] = useState(false);
-  // Once listed, keep everyone's names, including while the list closes.
-  const [listed, setListed] = useState(false);
   // You first, then everyone else in reaction order.
   const people = useMemo(
     () =>
@@ -289,15 +390,14 @@ function ReactionEmoji({
         : authorIds,
     [authorIds, session.viewer],
   );
-  const previewAuthors = people.slice(0, 3);
+  const previewAuthors = useMemo(() => people.slice(0, 3), [people]);
   const remaining = people.length - previewAuthors.length;
   // The emoji keeps its instance as the group shrinks; an open list must not
   // come back when the remainder does.
   if (remaining === 0 && listOpen) setListOpen(false);
   const reactorProfiles = useMemo(
-    () =>
-      selectProfiles(session.profiles, listed ? people : people.slice(0, 3)),
-    [session.profiles, people, listed],
+    () => selectProfiles(session.profiles, previewAuthors),
+    [session.profiles, previewAuthors],
   );
   const loadedReactors = useSyncExternalStore(
     reactorProfiles.subscribe,
@@ -306,13 +406,13 @@ function ReactionEmoji({
   );
   const grouped = authorIds.length > 1;
   const own = !!session.viewer && authorIds.includes(session.viewer);
-  const nameOf = (authorId: string) =>
+  const users = previewAuthors.map((authorId) =>
     authorId === session.viewer
       ? "You"
       : (loadedReactors.get(authorId)?.name ??
         profiles?.get(authorId)?.name ??
-        authorId.slice(0, 10));
-  const users = previewAuthors.map(nameOf);
+        authorId.slice(0, 10)),
+  );
   const user = users.join(", ");
   const revealName = () => {
     void session.profiles.ensure(previewAuthors, "background").catch(() => {});
@@ -414,11 +514,7 @@ function ReactionEmoji({
               size="inline"
               aria-haspopup="menu"
               onClick={() => {
-                void session.profiles
-                  .ensure(people, "background")
-                  .catch(() => {});
                 onPreviewChange(false);
-                setListed(true);
                 setListOpen(true);
               }}
             >
@@ -431,6 +527,7 @@ function ReactionEmoji({
       {remaining > 0 && (
         <MenuRoot open={listOpen} onOpenChange={setListOpen}>
           <MenuPopup
+            ref={listPopup}
             anchor={emojiAnchor}
             finalFocus={pill}
             aria-label={`Everyone who reacted with ${reaction.content}`}
@@ -439,34 +536,15 @@ function ReactionEmoji({
             data-reaction={reaction.content}
             data-reaction-url={reaction.emoji?.url}
           >
-            {people.map((authorId) => {
-              const profile =
-                loadedReactors.get(authorId) ?? profiles?.get(authorId);
-              const agent = !!agentPubkeys?.has(authorId);
-              const target = profileTarget(authorId, { agent });
-              return (
-                <MenuItem
-                  key={authorId}
-                  disabled={!target || !canOpenLink?.(target)}
-                  onClick={() => target && onOpenLink?.(target)}
-                >
-                  <ChoiceRow
-                    leading={
-                      <Avatar
-                        alt=""
-                        fallback={profile?.name ?? nameOf(authorId)}
-                        src={avatarMedia(profile?.picture, session.media)}
-                        size="small"
-                        shape={
-                          agent || profile?.isAgent ? "squircle" : "circle"
-                        }
-                      />
-                    }
-                    label={nameOf(authorId)}
-                  />
-                </MenuItem>
-              );
-            })}
+            <ReactorItems
+              popup={listPopup}
+              people={people}
+              session={session}
+              profiles={profiles}
+              agentPubkeys={agentPubkeys}
+              onOpenLink={onOpenLink}
+              canOpenLink={canOpenLink}
+            />
           </MenuPopup>
         </MenuRoot>
       )}
@@ -556,7 +634,9 @@ export function MessageReactions(
       onMouseEnter={() => setPointerInRow(true)}
       onMouseLeave={() => {
         setPointerInRow(false);
-        setPreview(undefined);
+        // An open preview keeps its own hover close, so the pointer can cross
+        // the gap to it; only a closed one stops warming the next pill here.
+        setPreview((current) => (current?.key ? current : undefined));
       }}
     >
       {active &&
@@ -587,7 +667,7 @@ export function MessageReactions(
               onFocusedRemoval={props.onFocusedRemoval}
               // Who reacted is a preview (DESIGN.md "Hover timing"): once one is
               // open, moving along the row slides it to the next pill at once.
-              previewWarm={pointerInRow && !!preview}
+              previewWarm={!!preview}
               previewOpen={preview?.key === key}
               previewSlide={previewSlide}
               onPreviewChange={(open) =>
@@ -601,9 +681,11 @@ export function MessageReactions(
                             ? current.fromIndex
                             : current?.index,
                       }
-                    : current?.key === key
-                      ? { ...current, key: null }
-                      : current,
+                    : current?.key !== key
+                      ? current
+                      : pointerInRow
+                        ? { ...current, key: null }
+                        : undefined,
                 )
               }
             />

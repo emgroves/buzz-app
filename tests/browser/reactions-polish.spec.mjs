@@ -105,6 +105,51 @@ test("large reaction previews keep the remainder count visible without scrolling
   }
 });
 
+// Browser-only: a slow pointer crosses the real gap between the pill and its
+// preview, and only real scrolling decides which list rows load names.
+test("a slow pointer opens the full reaction list, which loads names as rows scroll in", async ({
+  page,
+}) => {
+  await page.goto("/tests/fixtures/emoji.html?reactions&grouped=40");
+  const group = page.getByRole("button", { name: "👍: 40 people" });
+  const preview = page.getByRole("dialog", { name: "👍 reactions" });
+  const pill = await group.boundingBox();
+  const start = { x: pill.x + pill.width / 2, y: pill.y + pill.height / 2 };
+  await page.mouse.move(start.x, start.y);
+  await expect(preview).toBeVisible();
+  const link = await preview
+    .getByRole("button", { name: "and 37 others" })
+    .boundingBox();
+  const end = { x: link.x + link.width / 2, y: link.y + link.height / 2 };
+  // One pixel per step: a faster pointer can skip the gap.
+  await page.mouse.move(end.x, end.y, {
+    steps: Math.ceil(Math.hypot(end.x - start.x, end.y - start.y)),
+  });
+  await expect(preview).toBeVisible();
+  await page.mouse.down();
+  await page.mouse.up();
+  const list = page.getByRole("menu", { name: "Everyone who reacted with 👍" });
+  await expect(list).toBeVisible();
+  const rows = list.getByRole("menuitem");
+  await expect(rows).toHaveCount(40);
+  // The fixture host opens no profiles; its rows are not unavailable.
+  await expect(rows.first()).not.toHaveAttribute("data-disabled");
+  const ids = await rows.evaluateAll((items) =>
+    items.map((item) => item.dataset.reactor),
+  );
+  const requested = () =>
+    page.evaluate(() => window.emojiFixture.report.profileReads.flat());
+  // The preview loads three names; the list loads the rows in view.
+  await expect
+    .poll(async () => (await requested()).includes(ids[5]))
+    .toBe(true);
+  expect(await requested()).not.toContain(ids.at(-1));
+  await rows.last().scrollIntoViewIfNeeded();
+  await expect
+    .poll(async () => (await requested()).includes(ids.at(-1)))
+    .toBe(true);
+});
+
 // Browser-only: actual rem geometry and the line-height clipping boundary need
 // the production stylesheet and layout engine, not a DOM emulator.
 test("reaction emojis and hit areas grow together without clipping", async ({
@@ -496,7 +541,12 @@ test("reaction previews use the delayed first open, immediate warm switch, and r
     await expect(tooltip).toBeVisible();
     await heart.hover();
     await expect(tooltip).toContainText("heart");
+    // Leaving the row keeps the preview for its close grace, so a slow
+    // pointer can cross to it.
     await page.mouse.move(0, 0);
+    await page.clock.runFor(149);
+    await expect(tooltip).toBeVisible();
+    await page.clock.runFor(1);
     await expect(tooltip).toHaveCount(0);
     await page.clock.runFor(151);
     await custom.hover();
