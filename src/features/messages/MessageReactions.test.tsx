@@ -8,9 +8,11 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ConversationPresentation } from "../conversation/ConversationPresentation";
 import { MessageReactionControls, MessageReactions } from "./MessageReactions";
+import { profileTarget } from "../profiles/target";
 import { PREVIEW_REST_MS } from "../../shared/design-system/ui/hoverIntent";
 import { createRelaySession } from "../relay/session";
 import {
@@ -31,7 +33,7 @@ import type {
   ReactionToolProps,
 } from "../conversation/contracts";
 import { PublishRejected } from "../relay/outbox";
-import { useSyncExternalStore } from "react";
+import { type ComponentProps, useSyncExternalStore } from "react";
 
 const viewer = keypair(),
   other = keypair(),
@@ -107,7 +109,11 @@ function harness(
     disabled = false,
     onFocusedRemoval,
     audience,
-  }: {
+    ...reactors
+  }: Pick<
+    ComponentProps<typeof MessageReactions>,
+    "agentPubkeys" | "onOpenLink" | "canOpenLink"
+  > & {
     audience?: "agents";
     disabled?: boolean;
     onFocusedRemoval?: () => void;
@@ -129,6 +135,7 @@ function harness(
             inline={inline}
           />
           <MessageReactions
+            {...reactors}
             {...(onFocusedRemoval ? { onFocusedRemoval } : {})}
             row={audience ? { ...row, audience } : row}
             session={owner.session}
@@ -205,7 +212,7 @@ it("keeps one bubble and focus when the count crosses the former grouping thresh
   expect(group.textContent).toBe("👍9");
   expect(group.getAttribute("aria-pressed")).toBe("true");
   act(() => group.focus());
-  const preview = await screen.findByRole("tooltip");
+  const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
   expect(preview.textContent).toContain("You");
   for (const person of others.slice(0, 2))
     expect(preview.textContent).toContain(person.pubkey.slice(0, 10));
@@ -236,11 +243,151 @@ it.each([
     act(() =>
       screen.getByRole("button", { name: `👍: ${count} people` }).focus(),
     );
-    const preview = await screen.findByRole("tooltip");
-    if (remainder) expect(within(preview).getByText(remainder)).toBeTruthy();
+    // A preview with a remainder link is a named dialog; otherwise a tooltip.
+    const preview = remainder
+      ? await screen.findByRole("dialog", { name: "👍 reactions" })
+      : await screen.findByRole("tooltip");
+    if (remainder)
+      expect(
+        within(preview).getByRole("button", { name: remainder }),
+      ).toBeTruthy();
     else expect(within(preview).queryByText(/^and /)).toBeNull();
   },
 );
+
+it("lists everyone in a grouped reaction and opens a chosen profile", async () => {
+  const named = keypair(),
+    blocked = keypair(),
+    agent = keypair();
+  const people = [
+    named,
+    blocked,
+    agent,
+    ...Array.from({ length: 7 }, () => keypair()),
+  ];
+  // My later reaction is listed first; a duplicate never lists its author twice.
+  const h = harness([
+    ...people.map((person, index) => react(person, 2 + index)),
+    react(named, 20),
+    react(viewer, 21),
+  ]);
+  const onOpenLink = vi.fn((_target: string) => true);
+  render(
+    <h.Controls
+      agentPubkeys={new Set([agent.pubkey])}
+      onOpenLink={onOpenLink}
+      canOpenLink={(target) => target !== profileTarget(blocked.pubkey)}
+    />,
+  );
+  const group = screen.getByRole("button", { name: "👍: 11 people" });
+  fireEvent.mouseEnter(group);
+  fireEvent.mouseMove(group);
+  const preview = await screen.findByRole(
+    "dialog",
+    { name: "👍 reactions" },
+    { timeout: 2500 },
+  );
+  fireEvent.click(
+    within(preview).getByRole("button", { name: "and 8 others" }),
+  );
+  const list = await screen.findByRole("menu", {
+    name: "Everyone who reacted with 👍",
+  });
+  // The preview loads three profiles; the list loads everyone else's too.
+  // Profile reads run one at a time, so answer each as it is issued.
+  const expected = ["You", ...people.map((_, index) => `Person ${index}`)];
+  const resolved = () =>
+    expected.every(
+      (name) => within(list).queryAllByRole("menuitem", { name }).length === 1,
+    );
+  for (let read = 0; read < 10 && !resolved(); read++)
+    await act(async () => {
+      for (const entry of h.wire.pending)
+        if (entry.filters[0]?.kinds?.includes(0))
+          entry.respond(
+            people.flatMap((person, index) =>
+              entry.filters[0]?.authors?.includes(person.pubkey)
+                ? [profile(person, { name: `Person ${index}` })]
+                : [],
+            ),
+          );
+      await flush();
+    });
+  const items = within(list).getAllByRole("menuitem");
+  expect(items).toHaveLength(expected.length);
+  for (const [index, name] of expected.entries())
+    expect(within(list).getByRole("menuitem", { name })).toBe(items[index]);
+  expect(items[2]?.getAttribute("aria-disabled")).toBe("true");
+  expect(
+    items[3]
+      ?.querySelector("[data-avatar-shape]")
+      ?.getAttribute("data-avatar-shape"),
+  ).toBe("squircle");
+  const chosen = items[1];
+  if (!chosen) throw new Error("Expected a reactor row");
+  fireEvent.click(chosen);
+  expect(onOpenLink).toHaveBeenCalledWith(profileTarget(named.pubkey));
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+});
+
+it("reaches the full list by keyboard and returns to the emoji on Escape", async () => {
+  const user = userEvent.setup();
+  const h = harness(
+    Array.from({ length: 9 }, (_, index) => react(keypair(), 2 + index)),
+  );
+  const onOpenLink = vi.fn((_target: string) => true);
+  render(<h.Controls onOpenLink={onOpenLink} canOpenLink={() => true} />);
+  const group = screen.getByRole("button", { name: "👍: 9 people" });
+  act(() => group.focus());
+  const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
+  await user.keyboard("{Tab}");
+  expect(document.activeElement).toBe(
+    within(preview).getByRole("button", { name: "and 6 others" }),
+  );
+  await user.keyboard("{Enter}");
+  const list = await screen.findByRole("menu", {
+    name: "Everyone who reacted with 👍",
+  });
+  expect(within(list).getAllByRole("menuitem")).toHaveLength(9);
+  await waitFor(() => expect(list.contains(document.activeElement)).toBe(true));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(group));
+  expect(onOpenLink).not.toHaveBeenCalled();
+  expect(h.session.outbox?.snapshot()).toHaveLength(0);
+});
+
+it("closes the full list without dropping focus when the group splits", async () => {
+  const people = Array.from({ length: 4 }, () => keypair());
+  const reactions = people.map((person, index) => react(person, 2 + index));
+  const h = harness(reactions);
+  render(<h.Controls />);
+  const group = screen.getByRole("button", { name: "👍: 4 people" });
+  act(() => group.focus());
+  const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
+  fireEvent.click(within(preview).getByRole("button", { name: "and 1 other" }));
+  const list = await screen.findByRole("menu");
+  await waitFor(() => expect(list.contains(document.activeElement)).toBe(true));
+  // Everyone but the last reactor leaves at once, so the group becomes one emoji.
+  act(() =>
+    h.live.receive(
+      reactions.slice(0, 3).map((removed, index) => {
+        const leaving = people[index];
+        if (!leaving) throw new Error("Expected a reactor");
+        return signed(leaving, {
+          kind: 5,
+          content: "",
+          created_at: 20,
+          tags: [["e", removed.id]],
+        });
+      }),
+    ),
+  );
+  expect(screen.queryByRole("menu")).toBeNull();
+  const individual = screen.getAllByRole("button", { name: /^👍:/ });
+  expect(individual).toHaveLength(1);
+  expect(document.activeElement).toBe(individual[0]);
+});
 
 it("keeps custom emoji URLs separate and updates a grouped count when I join", async () => {
   const people = Array.from({ length: 9 }, () => keypair());

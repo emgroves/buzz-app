@@ -10,6 +10,15 @@ import {
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { Button } from "../../shared/design-system/ui/Button";
 import { PreviewCard } from "../../shared/design-system/ui/PreviewCard";
+import {
+  MenuItem,
+  MenuPopup,
+  MenuRoot,
+} from "../../shared/design-system/ui/Menu";
+import { ChoiceRow } from "../../shared/design-system/ui/ChoiceRow";
+import { Avatar } from "../../shared/design-system/ui/Avatar";
+import { avatarMedia } from "../../shared/avatar-source";
+import { profileTarget } from "../profiles/target";
 import { ReactionDelivery, ReactionTool } from "../conversation/ReactionTool";
 import { InlineText } from "../conversation/InlineText";
 import type {
@@ -36,6 +45,13 @@ type Props = {
   disabled: boolean;
   tools: ContributionReader<ComposerTool>;
   inline: ContributionReader<InlineRenderer>;
+};
+/** Names and profile destinations for the people who reacted. */
+type Reactors = {
+  profiles?: ReadonlyMap<string, Profile> | undefined;
+  agentPubkeys?: ReadonlySet<string> | undefined;
+  onOpenLink?: ((target: string) => boolean) | undefined;
+  canOpenLink?: ((target: string) => boolean) | undefined;
 };
 const noSubscribe = () => () => {};
 const noOperations = Object.freeze([]);
@@ -229,6 +245,9 @@ function ReactionEmoji({
   mine,
   session,
   profiles,
+  agentPubkeys,
+  onOpenLink,
+  canOpenLink,
   disabled,
   unavailable,
   toggle,
@@ -237,12 +256,11 @@ function ReactionEmoji({
   previewSlide,
   previewOpen,
   onPreviewChange,
-}: {
+}: Reactors & {
   reaction: MessageReaction;
   authorIds: string[];
   mine: boolean;
   session: RelaySession;
-  profiles?: ReadonlyMap<string, Profile> | undefined;
   disabled: boolean;
   unavailable: boolean;
   toggle(content: string, emoji?: CustomEmoji): boolean;
@@ -258,19 +276,28 @@ function ReactionEmoji({
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [previewTilt, setPreviewTilt] = useState("0deg");
   const emojiAnchor = useRef<HTMLSpanElement>(null);
-  const previewAuthors = useMemo(() => {
-    const first = authorIds.slice(0, 3);
-    return session.viewer && authorIds.includes(session.viewer)
-      ? [session.viewer, ...first.filter((id) => id !== session.viewer)].slice(
-          0,
-          3,
-        )
-      : first;
-  }, [authorIds, session.viewer]);
-  const remaining = authorIds.length - previewAuthors.length;
+  const pill = useRef<HTMLButtonElement>(null);
+  const othersButton = useRef<HTMLButtonElement>(null);
+  const [listOpen, setListOpen] = useState(false);
+  // Once listed, keep everyone's names, including while the list closes.
+  const [listed, setListed] = useState(false);
+  // You first, then everyone else in reaction order.
+  const people = useMemo(
+    () =>
+      session.viewer && authorIds.includes(session.viewer)
+        ? [session.viewer, ...authorIds.filter((id) => id !== session.viewer)]
+        : authorIds,
+    [authorIds, session.viewer],
+  );
+  const previewAuthors = people.slice(0, 3);
+  const remaining = people.length - previewAuthors.length;
+  // The emoji keeps its instance as the group shrinks; an open list must not
+  // come back when the remainder does.
+  if (remaining === 0 && listOpen) setListOpen(false);
   const reactorProfiles = useMemo(
-    () => selectProfiles(session.profiles, previewAuthors),
-    [session.profiles, previewAuthors],
+    () =>
+      selectProfiles(session.profiles, listed ? people : people.slice(0, 3)),
+    [session.profiles, people, listed],
   );
   const loadedReactors = useSyncExternalStore(
     reactorProfiles.subscribe,
@@ -279,13 +306,13 @@ function ReactionEmoji({
   );
   const grouped = authorIds.length > 1;
   const own = !!session.viewer && authorIds.includes(session.viewer);
-  const users = previewAuthors.map((authorId) =>
+  const nameOf = (authorId: string) =>
     authorId === session.viewer
       ? "You"
       : (loadedReactors.get(authorId)?.name ??
         profiles?.get(authorId)?.name ??
-        authorId.slice(0, 10)),
-  );
+        authorId.slice(0, 10));
+  const users = previewAuthors.map(nameOf);
   const user = users.join(", ");
   const revealName = () => {
     void session.profiles.ensure(previewAuthors, "background").catch(() => {});
@@ -310,8 +337,13 @@ function ReactionEmoji({
           .filter(Boolean)
           .join(" ")}
         onOpenChange={onPreviewChange}
+        {...(remaining > 0 && {
+          actionRef: othersButton,
+          "aria-label": `${reaction.content} reactions`,
+        })}
         trigger={
           <Button
+            ref={pill}
             variant="link"
             size="sm"
             shape={grouped ? "capsule" : "icon"}
@@ -376,23 +408,78 @@ function ReactionEmoji({
             ))}
           </span>
           {remaining > 0 && (
-            <span className={styles.reactionPreviewNames}>
+            <Button
+              ref={othersButton}
+              variant="link"
+              size="inline"
+              aria-haspopup="menu"
+              onClick={() => {
+                void session.profiles
+                  .ensure(people, "background")
+                  .catch(() => {});
+                onPreviewChange(false);
+                setListed(true);
+                setListOpen(true);
+              }}
+            >
               and {remaining} {remaining === 1 ? "other" : "others"}
-            </span>
+            </Button>
           )}
           <span className={styles.reactionPreviewName}>{name}</span>
         </div>
       </PreviewCard>
+      {remaining > 0 && (
+        <MenuRoot open={listOpen} onOpenChange={setListOpen}>
+          <MenuPopup
+            anchor={emojiAnchor}
+            finalFocus={pill}
+            aria-label={`Everyone who reacted with ${reaction.content}`}
+            // Focus here counts as on this emoji: if it splits up, focus
+            // moves to one of its individual emojis.
+            data-reaction={reaction.content}
+            data-reaction-url={reaction.emoji?.url}
+          >
+            {people.map((authorId) => {
+              const profile =
+                loadedReactors.get(authorId) ?? profiles?.get(authorId);
+              const agent = !!agentPubkeys?.has(authorId);
+              const target = profileTarget(authorId, { agent });
+              return (
+                <MenuItem
+                  key={authorId}
+                  disabled={!target || !canOpenLink?.(target)}
+                  onClick={() => target && onOpenLink?.(target)}
+                >
+                  <ChoiceRow
+                    leading={
+                      <Avatar
+                        alt=""
+                        fallback={profile?.name ?? nameOf(authorId)}
+                        src={avatarMedia(profile?.picture, session.media)}
+                        size="small"
+                        shape={
+                          agent || profile?.isAgent ? "squircle" : "circle"
+                        }
+                      />
+                    }
+                    label={nameOf(authorId)}
+                  />
+                </MenuItem>
+              );
+            })}
+          </MenuPopup>
+        </MenuRoot>
+      )}
     </span>
   );
 }
 
 /** Always mounted under the message so failed add/remove operations stay recoverable. */
 export function MessageReactions(
-  props: Props & {
-    onFocusedRemoval?: () => void;
-    profiles?: ReadonlyMap<string, Profile>;
-  },
+  props: Props &
+    Reactors & {
+      onFocusedRemoval?: () => void;
+    },
 ) {
   const active = useConversationPresentation();
   const { row, session, scope, tools } = props;
@@ -403,6 +490,25 @@ export function MessageReactions(
     session.emoji.snapshot,
   );
   const [pointerInRow, setPointerInRow] = useState(false);
+  const reactionRow = useRef<HTMLDivElement>(null);
+  const focusedReaction = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const previous = focusedReaction.current;
+    if (!previous || previous.isConnected) return;
+    focusedReaction.current = null;
+    if (!active || document.activeElement !== document.body) return;
+    // Grouping can replace the focused control after a local or live update.
+    const replacement = Array.from(
+      reactionRow.current?.querySelectorAll<HTMLButtonElement>(
+        "button[data-reaction]",
+      ) ?? [],
+    ).find(
+      (button) =>
+        button.dataset.reaction === previous.dataset.reaction &&
+        button.dataset.reactionUrl === previous.dataset.reactionUrl,
+    );
+    if (replacement) replacement.focus({ preventScroll: true });
+  });
   const [preview, setPreview] = useState<{
     key: string | null;
     index: number;
@@ -428,12 +534,25 @@ export function MessageReactions(
   return (
     // biome-ignore lint/a11y/useSemanticElements: This groups reactions, not form fields.
     <div
+      ref={reactionRow}
       className={styles.reactions}
       data-message-reactions={(active && reactions.length > 0) || undefined}
       data-testid="reaction-row"
       data-populated={(active && reactions.length > 0) || undefined}
       role="group"
       aria-label="Reactions"
+      onFocusCapture={(event) => {
+        focusedReaction.current =
+          event.target instanceof Element
+            ? event.target.closest<HTMLElement>(
+                "button[data-reaction], [role='menu'][data-reaction]",
+              )
+            : null;
+      }}
+      onBlurCapture={() => {
+        if (focusedReaction.current?.isConnected)
+          focusedReaction.current = null;
+      }}
       onMouseEnter={() => setPointerInRow(true)}
       onMouseLeave={() => {
         setPointerInRow(false);
@@ -459,6 +578,9 @@ export function MessageReactions(
               mine={mine}
               session={session}
               profiles={props.profiles}
+              agentPubkeys={props.agentPubkeys}
+              onOpenLink={props.onOpenLink}
+              canOpenLink={props.canOpenLink}
               disabled={props.disabled}
               unavailable={action.disabled}
               toggle={action.toggle}

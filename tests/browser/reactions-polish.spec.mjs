@@ -48,7 +48,7 @@ test("grouped reaction counts fit and preview in both themes and text sizes", as
   // Activation dismisses the preview; keyboard re-entry opens it again.
   await group.press("Tab");
   await group.focus();
-  const preview = page.locator('.buzz-preview-card[role="tooltip"]');
+  const preview = page.getByRole("dialog", { name: "👍 reactions" });
   await expect(preview).toBeVisible();
   await page.screenshot({
     path: test.info().outputPath("grouped-reactions.png"),
@@ -79,7 +79,7 @@ test("large reaction previews keep the remainder count visible without scrolling
     );
     const group = page.getByRole("button", { name: `👍: ${count} people` });
     await group.focus();
-    const preview = page.locator('.buzz-preview-card[role="tooltip"]');
+    const preview = page.getByRole("dialog", { name: "👍 reactions" });
     const remainder = preview.getByText(`and ${count - 3} others`, {
       exact: true,
     });
