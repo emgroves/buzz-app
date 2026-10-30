@@ -320,13 +320,9 @@ it("lists everyone in a grouped reaction, loading names as rows scroll in", asyn
     />,
   );
   const group = screen.getByRole("button", { name: "👍: 11 people" });
-  fireEvent.mouseEnter(group);
-  fireEvent.mouseMove(group);
-  const preview = await screen.findByRole(
-    "dialog",
-    { name: "👍 reactions" },
-    { timeout: 2500 },
-  );
+  // The pointer route to the list is a browser journey; focus opens at once.
+  act(() => group.focus());
+  const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
   fireEvent.click(
     within(preview).getByRole("button", { name: "and 8 others" }),
   );
@@ -436,13 +432,63 @@ it("says when names in the full list could not load and retries on reopening", a
     reads()[0]?.fail(new Error("Profiles offline"));
     await flush();
   });
-  expect(within(list).getByRole("alert").textContent).toBe(
+  const note = within(list).getByRole("alert");
+  expect(note.textContent).toBe(
     "Some names could not load. Reopen this list to try again.",
   );
-  expect(within(list).getAllByRole("menuitem")).toHaveLength(9);
+  const items = within(list).getAllByRole("menuitem");
+  expect(items).toHaveLength(9);
+  // After the rows: a failed later page must not push the visible ones down.
+  expect(items.at(-1)?.nextElementSibling).toBe(note);
   fireEvent.keyDown(list, { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   await open(2);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("does not report names that a reconnect cancels and reads again", async () => {
+  const last = keypair();
+  const people = [...Array.from({ length: 8 }, () => keypair()), last];
+  const h = harness(people.map((person, index) => react(person, 2 + index)));
+  render(<h.Controls />);
+  const lists = (entry: (typeof h.wire.pending)[number]) =>
+    !!entry.filters[0]?.authors?.includes(last.pubkey);
+  // Profile reads run one at a time: answer others until the list's runs.
+  const listRead = async () => {
+    const live = () =>
+      h.wire.pending.filter((entry) => !entry.signal?.aborted && lists(entry));
+    for (let read = 0; read < 10 && !live().length; read++)
+      await act(async () => {
+        for (const entry of h.wire.pending)
+          if (entry.filters[0]?.kinds?.includes(0) && !lists(entry))
+            entry.respond([]);
+        await flush();
+      });
+    expect(live()).toHaveLength(1);
+    return live()[0];
+  };
+  act(() => screen.getByRole("button", { name: "👍: 9 people" }).focus());
+  const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
+  fireEvent.click(
+    within(preview).getByRole("button", { name: "and 6 others" }),
+  );
+  const list = await screen.findByRole("menu");
+  reveal(within(list).getAllByRole("menuitem"));
+  const cancelled = await listRead();
+  // A restored connection cancels pending profile reads, then reads them again.
+  await act(async () => {
+    h.live.established();
+    await flush();
+  });
+  expect(cancelled?.signal?.aborted).toBe(true);
+  const again = await listRead();
+  await act(async () => {
+    again?.respond([profile(last, { name: "Last person" })]);
+    await flush();
+  });
+  expect(
+    within(list).getByRole("menuitem", { name: "Last person" }),
+  ).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
 });
 

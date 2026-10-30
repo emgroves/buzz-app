@@ -559,6 +559,59 @@ test("reaction previews use the delayed first open, immediate warm switch, and r
   }
 });
 
+// Browser-only: React counts the portaled list as inside the reaction row, and
+// only a real engine decides whether a list unmounting under the pointer sends
+// the row a leave. WebKit sends none for either close, Chromium none for Escape.
+for (const close of ["choosing a reactor", "Escape"]) {
+  test(`closing the full reaction list by ${close} leaves the next preview waiting for a rest`, async ({
+    page,
+  }) => {
+    // Without exit motion the list unmounts before the pointer is hit-tested
+    // again, so no boundary event can reach the row first.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/tests/fixtures/emoji.html?reactions&grouped=40&wrap");
+    const row = page
+      .locator("[data-message-id]")
+      .first()
+      .getByTestId("reaction-row");
+    const preview = page.getByRole("dialog", { name: "👍 reactions" });
+    const list = page.getByRole("menu", {
+      name: "Everyone who reacted with 👍",
+    });
+    const tooltip = page.locator(
+      '.buzz-preview-card[role="tooltip"][data-open]',
+    );
+    await row.getByRole("button", { name: "👍: 41 people" }).hover();
+    await preview.getByRole("button", { name: "and 38 others" }).click();
+    await expect(list.getByRole("menuitem")).toHaveCount(41);
+    if (close === "Escape") {
+      // Off the list and away from where the preview returns.
+      await page.mouse.move(1390, 890);
+      await page.keyboard.press("Escape");
+      await expect(list).toHaveCount(0);
+      // Escape closes one layer: the preview returns with focus on the pill.
+      await expect(preview).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(preview).toHaveCount(0);
+    } else {
+      await list.getByRole("menuitem").nth(1).click();
+      await expect(list).toHaveCount(0);
+    }
+    await page.mouse.move(1300, 800);
+    await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-01-01T00:00:10Z"));
+    try {
+      await row.locator('button[data-reaction="❤️"]').hover();
+      await page.clock.runFor(599);
+      await expect(tooltip).toHaveCount(0);
+      await page.clock.runFor(1);
+      await expect(tooltip).toContainText("heart");
+    } finally {
+      await page.clock.resume();
+    }
+  });
+}
+
 test("long native reactions and unavailable shortcode artwork stay inside the hit area", async ({
   page,
 }) => {
