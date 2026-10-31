@@ -11,6 +11,7 @@ import {
   referencedEmoji,
   type CustomEmoji,
 } from "./emoji";
+import { createEmojiCatalog } from "./emoji-catalog";
 import { eventDto, newer, type RelayEvent } from "./events";
 import type { Priority, RelayReader } from "./reader";
 import type { RelayWriter } from "./transport";
@@ -37,6 +38,7 @@ export function createEmojiDirectory(
   authoring?: EmojiAuthoring,
 ) {
   const sets = new Map<string, { event: RelayEvent; bytes: number }>();
+  const catalog = createEmojiCatalog(reader);
   const listeners = new Set<() => void>();
   let bytes = 0,
     closed = false,
@@ -259,6 +261,9 @@ export function createEmojiDirectory(
     },
     ensure,
     refresh,
+    search: catalog.search,
+    resolve: catalog.resolve,
+    known: catalog.known,
     ...(authoring
       ? {
           /** Removes only from the viewer's set; absent or invalid names are no-ops. */
@@ -306,6 +311,7 @@ export function createEmojiDirectory(
     sets.clear();
     bytes = 0;
     limited = false;
+    catalog.clear();
     publish({
       status: "idle",
       entries: Object.freeze([]),
@@ -345,11 +351,15 @@ export function createEmojiDirectory(
             : "Community emoji isn't ready. Your draft is kept; try sending again shortly.",
         );
       }
-      return contentEmojiTags(content, snapshot.entries);
+      return contentEmojiTags(content, [
+        ...snapshot.entries,
+        ...catalog.known(),
+      ]);
     },
     dispose() {
       closed = true;
       lifetime.abort();
+      catalog.dispose();
       clear();
       listeners.clear();
     },

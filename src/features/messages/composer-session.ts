@@ -30,7 +30,8 @@ export type ComposerSession = Pick<
   emoji: Pick<
     RelaySession["emoji"],
     "snapshot" | "subscribe" | "ensure" | "refresh"
-  >;
+  > &
+    Partial<Pick<RelaySession["emoji"], "search" | "known">>;
   agentChoices: Pick<
     RelaySession["agentChoices"],
     "snapshot" | "subscribe" | "ensure" | "retain" | "refresh"

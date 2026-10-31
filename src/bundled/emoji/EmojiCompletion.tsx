@@ -6,6 +6,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ComposerCompletionProps } from "../../features/conversation/contracts";
+import type { CustomEmoji as CustomEmojiEntry } from "../../features/relay/emoji";
+import {
+  catalogSearchText,
+  mergeEmoji,
+} from "../../features/relay/emoji-catalog";
 import { CustomEmoji } from "./CustomEmoji";
 import {
   exactEmoji,
@@ -13,6 +18,15 @@ import {
   searchCustomEmoji,
   type EmojiMatch,
 } from "./emoji-search";
+
+export const EMOJI_SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_FAILED =
+  "Community emoji search unavailable; showing loaded emoji.";
+type RelaySearch = Readonly<{
+  key: string;
+  entries?: readonly CustomEmojiEntry[];
+  failed?: true;
+}>;
 
 const OPTICAL_SAMPLE_SIZE = 64;
 const OPTICAL_CANVAS_SIZE = 128;
@@ -114,14 +128,49 @@ export function EmojiCompletion({
     session.emoji.snapshot,
   );
   const [attempt, retry] = useState(0);
+  const [relay, setRelay] = useState<RelaySearch>();
+  const searchable =
+    !!session.emoji.search && catalogSearchText(query.query) !== undefined;
+  const searchKey = `${attempt}\n${query.query}`;
+  const found = relay?.key === searchKey ? relay : undefined;
   useEffect(() => {
     void session.emoji.ensure("foreground");
   }, [session]);
   useEffect(() => {
+    if (!searchable) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      session.emoji
+        .search?.(query.query, {
+          signal: controller.signal,
+          retry: attempt > 0,
+        })
+        .then(
+          (entries) => {
+            if (!controller.signal.aborted)
+              setRelay({ key: searchKey, entries });
+          },
+          () => {
+            if (!controller.signal.aborted)
+              setRelay({ key: searchKey, failed: true });
+          },
+        );
+    }, EMOJI_SEARCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [session, searchable, query.query, attempt, searchKey]);
+  useEffect(() => {
     void attempt; // Explicit retry repeats this query even when catalog data is unchanged.
     let live = true;
     let withdraw: (() => void) | false = false;
-    const custom = catalog.entries.filter((item) => !!session.media(item.url));
+    // Relay results complete the legacy catalog; its entry wins for a shared name.
+    const custom = mergeEmoji(
+      mergeEmoji(catalog.entries, session.emoji.known?.() ?? []),
+      found?.entries ?? [],
+    ).filter((item) => !!session.media(item.url));
+    const searched = !searchable || (!!found && !found.failed);
     const items = (matches: readonly EmojiMatch[]) => {
       const counts = new Map<string, number>();
       for (const item of matches)
@@ -158,7 +207,7 @@ export function EmojiCompletion({
         if (withdraw) withdraw();
         withdraw = publish({
           items: items(matches),
-          ...(catalog.status === "ready"
+          ...(catalog.status === "ready" && searched
             ? { spaceId: exactEmoji(query.query, matches) }
             : {}),
           ...(catalog.status === "error"
@@ -166,7 +215,9 @@ export function EmojiCompletion({
                 status: "Community emoji unavailable; Unicode results shown.",
                 retry: retrySearch,
               }
-            : {}),
+            : found?.failed
+              ? { status: SEARCH_FAILED, retry: retrySearch }
+              : {}),
         });
       })
       .catch(() => {
@@ -187,6 +238,6 @@ export function EmojiCompletion({
       unsubscribe();
       if (withdraw) withdraw();
     };
-  }, [session, query.query, publish, catalog, attempt]);
+  }, [session, query.query, publish, catalog, attempt, found, searchable]);
   return null;
 }

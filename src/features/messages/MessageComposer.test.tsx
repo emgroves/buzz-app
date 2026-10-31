@@ -5483,6 +5483,30 @@ it("keeps custom suggestions and retry without replacement after a Unicode failu
   expect(h.input()).toHaveValue(":party:");
 });
 
+it("offers a catalog emoji found on the relay, says when that search fails, and inserts the pick", async () => {
+  const bufo = { shortcode: "bufo_joy", url: "https://emoji.test/bufo.png" };
+  const search = vi
+    .fn<NonNullable<RelaySession["emoji"]["search"]>>()
+    .mockRejectedValueOnce(new Error("relay down"))
+    .mockResolvedValue([bufo]);
+  const h = mountEmojiTypeahead();
+  Object.assign(h.session.emoji, { search });
+  h.fill("hi :bufo");
+  await screen.findByText(
+    "Community emoji search unavailable; showing loaded emoji.",
+  );
+  expect(screen.queryByRole("option", { name: ":bufo_joy:" })).toBeNull();
+  await h.user.click(screen.getByRole("option", { name: "Retry suggestions" }));
+  await screen.findByRole("option", { name: ":bufo_joy:" });
+  expect(search).toHaveBeenLastCalledWith("bufo", {
+    signal: expect.any(AbortSignal),
+    retry: true,
+  });
+  fireEvent.keyDown(h.input(), { key: "Enter" });
+  expect(h.input()).toHaveValue("hi :bufo_joy: ");
+  expect(h.onSend).not.toHaveBeenCalled();
+});
+
 it.each([
   ["```\n:-1\n```", 7],
   ["~~~\n:-1", 7],

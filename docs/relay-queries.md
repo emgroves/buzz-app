@@ -165,6 +165,39 @@ running broker needs one coordinated restart to gain the new filter. Reopening
 the picker reuses its ready catalog; it is not a manual refresh fallback for an
 older broker.
 
+Relays that store kind-30180 catalog entries (one emoji per event, global and
+author-keyed; see block/buzz's NIP-CE) are read on demand rather than folded into
+the set catalog. `session.emoji.search(prefix, { signal, retry })` sends a finite
+`{ kinds: [30180], search, search_mode: "prefix", limit: 50 }` read: the signed
+HTTP `/query` bridge honors `search_mode`, while a WebSocket `REQ` would match only
+whole words. The typed shortcode is lowercased and its `_` and `-` become spaces,
+as the relay indexes them. A prefix shorter than two letters or digits, or one that
+cannot name a shortcode (`:+1`), resolves empty without a read. Each entry must be
+well formed (one `d` equal to the lowercase shortcode, one `emoji` tag with an
+`http(s)` URL of at most 2048 bytes, no `h` tag), and the newest event across
+authors wins a shortcode, then the lowest event id. A failed read rejects: it never
+resolves empty, and it pauses further searches for 30 seconds unless the caller
+passes `retry`. The signal and a session-wide fence both cancel a read without
+counting as a failure. Results are kept per prefix for 60 seconds (64 prefixes);
+`known()` lists up to 500 catalog emoji already read, and `message` tag resolution
+consults them after the set catalog, which wins a shortcode both have.
+`session.emoji.resolve(names, { signal })` does an exact `#d` lookup of at most 50
+names, answering `{ found, missing }`; a failed or possibly truncated read rejects.
+Clearing the directory (access change, cache clear) or disposing it drops all of
+this state, so a community switch leaks nothing: it is session-owned, not
+module-level. A relay that does not store 30180, or whose search index omits it,
+answers `[]`, which this client cannot tell from "no match"; it then shows the
+set-catalog results exactly as before.
+
+The Emoji completion starts one search 250 ms after the last keystroke, cancels it
+when the query changes, and merges the answer with the set catalog and `known()`
+before ranking. It shows `Community emoji search unavailable; showing loaded
+emoji.` with Retry when the read fails. The closing colon replaces an exact Unicode
+shortcode only after that search has settled. A host that cannot search (the
+detached huddle composer) skips it. Sending still resolves `:shortcodes:` from the
+set catalog and `known()` only; async resolution of other catalog names, and the
+picker's search box, are not built yet.
+
 `session.messages.send`, `reply`, `edit`, and `react` resolve referenced `:shortcodes:`
 into original-URL emoji tags **before** the outbox assigns identity or signs. Text
 without shortcode candidates does not wait. A catalog that has not loaded yet,
