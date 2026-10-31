@@ -544,7 +544,7 @@ test("reaction previews use the delayed first open, immediate warm switch, and r
     // Leaving the row keeps the preview for its close grace, so a slow
     // pointer can cross to it.
     await page.mouse.move(0, 0);
-    await page.clock.runFor(149);
+    await page.clock.runFor(74);
     await expect(tooltip).toBeVisible();
     await page.clock.runFor(1);
     await expect(tooltip).toHaveCount(0);
@@ -602,7 +602,7 @@ for (const close of ["choosing a reactor", "Escape"]) {
     await page.clock.pauseAt(new Date("2026-01-01T00:00:10Z"));
     try {
       await row.locator('button[data-reaction="❤️"]').hover();
-      await page.clock.runFor(599);
+      await page.clock.runFor(299);
       await expect(tooltip).toHaveCount(0);
       await page.clock.runFor(1);
       await expect(tooltip).toContainText("heart");
