@@ -521,14 +521,19 @@ it("reaches the full list by keyboard and returns to the emoji on Escape", async
   expect(h.session.outbox?.snapshot()).toHaveLength(0);
 });
 
-it("closes the full list without dropping focus when the group splits", async () => {
+it("closes the full list without dropping focus or keeping the row warm when the group splits", async () => {
   const people = Array.from({ length: 4 }, () => keypair());
   const reactions = people.map((person, index) => react(person, 2 + index));
   const h = harness(reactions);
   render(<h.Controls />);
   const group = screen.getByRole("button", { name: "👍: 4 people" });
+  fireEvent.mouseEnter(group);
   act(() => group.focus());
   const preview = await screen.findByRole("dialog", { name: "👍 reactions" });
+  // The pointer crosses to the preview and then into the list. Both are
+  // portaled, so React keeps counting it as inside the row, and a list that
+  // vanishes under it sends the row no leave.
+  fireEvent.mouseLeave(group, { relatedTarget: preview });
   fireEvent.click(within(preview).getByRole("button", { name: "and 1 other" }));
   const list = await screen.findByRole("menu");
   await waitFor(() => expect(list.contains(document.activeElement)).toBe(true));
@@ -554,6 +559,24 @@ it("closes the full list without dropping focus when the group splits", async ()
   const individual = screen.getAllByRole("button", { name: /^👍:/ });
   expect(individual).toHaveLength(1);
   expect(document.activeElement).toBe(individual[0]);
+  // The closed list also returns focus to the pill on the next frame; let
+  // that pass so the blur below is not undone.
+  await act(() => new Promise(requestAnimationFrame));
+  act(() => individual[0]?.blur());
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  // Losing the list counts as leaving the row: the next hover waits the full
+  // rest instead of opening at once as if a preview were still open.
+  vi.useFakeTimers();
+  try {
+    fireEvent.mouseEnter(individual[0] as HTMLElement);
+    fireEvent.mouseMove(individual[0] as HTMLElement);
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_REST_MS - 1));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("keeps custom emoji URLs separate and updates a grouped count when I join", async () => {
