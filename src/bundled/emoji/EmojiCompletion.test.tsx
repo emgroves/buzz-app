@@ -8,10 +8,12 @@ import type {
 } from "../../features/conversation/contracts";
 import type { CustomEmoji } from "../../features/relay/emoji";
 import type { EmojiSearchOptions } from "../../features/relay/emoji-catalog";
+import { ReadError } from "../../features/relay/errors";
 import { EMOJI_SEARCH_DEBOUNCE_MS, EmojiCompletion } from "./EmojiCompletion";
 import { searchEmoji } from "./emoji-search";
 
 const party = { shortcode: "party_parrot", url: "https://emoji.test/p.png" };
+const smile = { shortcode: "smile", url: "https://emoji.test/s.png" };
 const legacy = { shortcode: "party_hat", url: "https://emoji.test/h.png" };
 
 beforeAll(async () => {
@@ -25,6 +27,7 @@ afterEach(() => {
 function fixture({
   search,
   known,
+  cached,
   entries = [],
 }: {
   search?: (
@@ -32,6 +35,7 @@ function fixture({
     options?: EmojiSearchOptions,
   ) => Promise<readonly CustomEmoji[]>;
   known?: () => readonly CustomEmoji[];
+  cached?: (prefix: string) => readonly CustomEmoji[] | undefined;
   entries?: readonly CustomEmoji[];
 } = {}) {
   vi.useFakeTimers();
@@ -46,6 +50,7 @@ function fixture({
       refresh: vi.fn(async () => {}),
       ...(search ? { search: vi.fn(search) } : {}),
       ...(known ? { known } : {}),
+      ...(cached ? { cached: vi.fn(cached) } : {}),
     },
   };
   const publish = vi.fn((next: CompletionResult) => {
@@ -80,14 +85,18 @@ function fixture({
   };
 }
 
-it("searches the relay after a pause, merges what it finds, and gates exact replacement on it", async () => {
+it("searches the relay after a pause, merges what it finds, and converts an exact name without waiting", async () => {
   let release!: () => void;
   const h = fixture({
     entries: [legacy],
-    search: () =>
+    search: (prefix) =>
       new Promise((resolve) => {
         release = () =>
-          resolve([party, { ...legacy, url: "https://relay.test/x" }]);
+          resolve(
+            prefix === "smile"
+              ? [smile]
+              : [party, { ...legacy, url: "https://relay.test/x" }],
+          );
       }),
   });
   h.show("par");
@@ -102,7 +111,6 @@ it("searches the relay after a pause, merges what it finds, and gates exact repl
     signal: expect.any(AbortSignal),
     retry: false,
   });
-  expect(h.result().spaceId).toBeUndefined();
   await act(async () => release());
   await h.settle();
   expect(h.labels()).toEqual([":party_hat:", ":party_parrot:"]);
@@ -113,11 +121,30 @@ it("searches the relay after a pause, merges what it finds, and gates exact repl
 
   h.show("smile");
   await h.settle();
-  expect(h.result().spaceId).toBeUndefined();
+  expect(h.result().spaceId).toBe("unicode/smile");
   await act(() => vi.advanceTimersByTimeAsync(EMOJI_SEARCH_DEBOUNCE_MS));
+  expect(h.result().spaceId).toBe("unicode/smile");
   await act(async () => release());
   await h.settle();
-  expect(h.result().spaceId).toBe("unicode/smile");
+  expect(h.labels()).toEqual([":smile:"]);
+  expect(h.result().spaceId).toBeUndefined();
+});
+
+it("serves a prefix the session already holds at once, without a search", async () => {
+  const pool: CustomEmoji[] = [];
+  const h = fixture({
+    known: () => pool,
+    cached: () => {
+      pool.push(party);
+      return [party];
+    },
+    search: async () => [],
+  });
+  h.show("parro");
+  await h.settle();
+  expect(h.labels()).toEqual([":party_parrot:"]);
+  await act(() => vi.advanceTimersByTimeAsync(EMOJI_SEARCH_DEBOUNCE_MS * 2));
+  expect(h.session.emoji.search).not.toHaveBeenCalled();
 });
 
 it("shows catalog emoji already read at once and cancels a search the next keystroke replaces", async () => {
@@ -140,23 +167,30 @@ it("shows catalog emoji already read at once and cancels a search the next keyst
   expect(h.session.emoji.search).toHaveBeenCalledTimes(1);
 });
 
-it("keeps loaded emoji, says the search failed and retries on request", async () => {
-  let fail = true;
+it("keeps loaded emoji, says the search failed, searches again after a cancelled read and retries on request", async () => {
+  let mode: "cancel" | "fail" | "ok" = "cancel";
   const h = fixture({
     entries: [legacy],
     search: async () => {
-      if (fail) throw new Error("down");
+      if (mode === "cancel")
+        throw new ReadError("cancelled", "Relay read cancelled");
+      if (mode === "fail") throw new Error("down");
       return [party];
     },
   });
   h.show("part");
   await act(() => vi.advanceTimersByTimeAsync(EMOJI_SEARCH_DEBOUNCE_MS));
+  expect(h.session.emoji.search).toHaveBeenCalledTimes(1);
+  expect(h.result().status).toBeUndefined();
+  mode = "fail";
+  await act(() => vi.advanceTimersByTimeAsync(EMOJI_SEARCH_DEBOUNCE_MS));
+  expect(h.session.emoji.search).toHaveBeenCalledTimes(2);
   expect(h.labels()).toEqual([":party_hat:"]);
   expect(h.result().status).toBe(
     "Community emoji search unavailable; showing loaded emoji.",
   );
   expect(h.result().spaceId).toBeUndefined();
-  fail = false;
+  mode = "ok";
   await act(async () => h.result().retry?.());
   await act(() => vi.advanceTimersByTimeAsync(EMOJI_SEARCH_DEBOUNCE_MS));
   expect(h.session.emoji.search).toHaveBeenLastCalledWith("part", {
@@ -165,6 +199,12 @@ it("keeps loaded emoji, says the search failed and retries on request", async ()
   });
   expect(h.labels()).toEqual([":party_hat:", ":party_parrot:"]);
   expect(h.result().status).toBeUndefined();
+  h.show("partx");
+  await act(() => vi.advanceTimersByTimeAsync(EMOJI_SEARCH_DEBOUNCE_MS));
+  expect(h.session.emoji.search).toHaveBeenLastCalledWith("partx", {
+    signal: expect.any(AbortSignal),
+    retry: false,
+  });
 });
 
 it("does not wait for the relay when it cannot hold the name or the host cannot search", async () => {

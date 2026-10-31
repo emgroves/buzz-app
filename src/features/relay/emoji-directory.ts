@@ -262,7 +262,7 @@ export function createEmojiDirectory(
     ensure,
     refresh,
     search: catalog.search,
-    resolve: catalog.resolve,
+    cached: catalog.cached,
     known: catalog.known,
     ...(authoring
       ? {

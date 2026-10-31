@@ -1487,9 +1487,10 @@ and returns focus. You can also type `:shortcode:`: the closing colon after one
 exact Unicode or community shortcode, such as `:+1:` or `:-1:`, replaces it with
 that emoji, while partial names, namesakes, times, URLs and code keep the typed
 text, including raw Markdown code in pasted or restored drafts. Replacement requires
-both catalogs to load successfully and the relay's catalog search to answer, which
-starts after a brief pause in typing; partial suggestions and retry remain available
-without automatically accepting the colon. One undo restores the full typed shortcode,
+both catalogs to load successfully and does not wait for the relay's catalog search,
+which starts after a brief pause in typing; a community namesake that search finds
+makes the name ambiguous, as for any namesake. Partial suggestions and retry remain
+available without automatically accepting the colon. One undo restores the full typed shortcode,
 including its closing colon, with the caret after it. The picker follows the host
 Light/Dark choice, including while already
 open, without recreating its search or dictionary. It does not independently

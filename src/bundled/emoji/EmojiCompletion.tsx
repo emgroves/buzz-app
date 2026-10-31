@@ -11,6 +11,7 @@ import {
   catalogSearchText,
   mergeEmoji,
 } from "../../features/relay/emoji-catalog";
+import { readErrorKind } from "../../features/relay/errors";
 import { CustomEmoji } from "./CustomEmoji";
 import {
   exactEmoji,
@@ -129,6 +130,9 @@ export function EmojiCompletion({
   );
   const [attempt, retry] = useState(0);
   const [relay, setRelay] = useState<RelaySearch>();
+  const [again, searchAgain] = useState(0);
+  const retried = useRef<string | undefined>(undefined);
+  const cancelledAt = useRef<string | undefined>(undefined);
   const searchable =
     !!session.emoji.search && catalogSearchText(query.query) !== undefined;
   const searchKey = `${attempt}\n${query.query}`;
@@ -137,22 +141,33 @@ export function EmojiCompletion({
     void session.emoji.ensure("foreground");
   }, [session]);
   useEffect(() => {
+    void again; // A cancelled read repeats this query.
     if (!searchable) return;
+    if (session.emoji.cached?.(query.query)) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       session.emoji
         .search?.(query.query, {
           signal: controller.signal,
-          retry: attempt > 0,
+          retry: retried.current === searchKey,
         })
         .then(
           (entries) => {
-            if (!controller.signal.aborted)
-              setRelay({ key: searchKey, entries });
+            if (controller.signal.aborted) return;
+            cancelledAt.current = undefined;
+            setRelay({ key: searchKey, entries });
           },
-          () => {
-            if (!controller.signal.aborted)
-              setRelay({ key: searchKey, failed: true });
+          (error) => {
+            if (controller.signal.aborted) return;
+            if (
+              readErrorKind(error) === "cancelled" &&
+              cancelledAt.current !== searchKey
+            ) {
+              cancelledAt.current = searchKey;
+              searchAgain((value) => value + 1);
+              return;
+            }
+            setRelay({ key: searchKey, failed: true });
           },
         );
     }, EMOJI_SEARCH_DEBOUNCE_MS);
@@ -160,7 +175,7 @@ export function EmojiCompletion({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [session, searchable, query.query, attempt, searchKey]);
+  }, [session, searchable, query.query, searchKey, again]);
   useEffect(() => {
     void attempt; // Explicit retry repeats this query even when catalog data is unchanged.
     let live = true;
@@ -170,7 +185,6 @@ export function EmojiCompletion({
       mergeEmoji(catalog.entries, session.emoji.known?.() ?? []),
       found?.entries ?? [],
     ).filter((item) => !!session.media(item.url));
-    const searched = !searchable || (!!found && !found.failed);
     const items = (matches: readonly EmojiMatch[]) => {
       const counts = new Map<string, number>();
       for (const item of matches)
@@ -192,8 +206,8 @@ export function EmojiCompletion({
         edit: { text: item.text },
       }));
     };
-    // Suggestions may be partial; automatic replacement needs both catalogs.
     const retrySearch = () => {
+      retried.current = `${attempt + 1}\n${query.query}`;
       retry((value) => value + 1);
       if (catalog.status === "error") void session.emoji.refresh();
     };
@@ -207,7 +221,7 @@ export function EmojiCompletion({
         if (withdraw) withdraw();
         withdraw = publish({
           items: items(matches),
-          ...(catalog.status === "ready" && searched
+          ...(catalog.status === "ready"
             ? { spaceId: exactEmoji(query.query, matches) }
             : {}),
           ...(catalog.status === "error"
@@ -238,6 +252,6 @@ export function EmojiCompletion({
       unsubscribe();
       if (withdraw) withdraw();
     };
-  }, [session, query.query, publish, catalog, attempt, found, searchable]);
+  }, [session, query.query, publish, catalog, attempt, found]);
   return null;
 }

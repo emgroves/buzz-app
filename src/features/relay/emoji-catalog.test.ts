@@ -1,7 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import {
   EMOJI_ENTRY_KIND,
-  EMOJI_RESOLVE_MAX_NAMES,
   EMOJI_SEARCH_LIMIT,
   catalogSearchText,
   collapseCatalog,
@@ -108,9 +107,6 @@ it("keeps only well-formed catalog entries and picks the newest per shortcode", 
     { shortcode: "shouty", url: png("shouty") },
     { shortcode: "older", url: png("new") },
   ]);
-  expect(collapseCatalog(events, new Set(["older"]))).toEqual([
-    { shortcode: "older", url: png("new") },
-  ]);
 });
 
 it("breaks a created_at tie with the lowest event id", () => {
@@ -152,7 +148,9 @@ it("searches by prefix, caches each prefix briefly and never reports a failure a
   ]);
   await emoji.search("PARR");
   expect(reader.read).toHaveBeenCalledTimes(1);
+  expect(emoji.cached("parr")).toHaveLength(1);
   time = 61_000;
+  expect(emoji.cached("parr")).toBeUndefined();
   await emoji.search("parr");
   expect(reader.read).toHaveBeenCalledTimes(2);
 
@@ -245,56 +243,10 @@ it("fences a search that a clear overtakes", async () => {
   expect(reader.read).toHaveBeenCalledTimes(2);
 });
 
-it("resolves exact names in one batched lookup, then from memory", async () => {
-  const reader = relay(async () => [
-    entry("wave"),
-    entry("wave", png("newer"), { key: bob, at: 200 }),
-    entry("unasked"),
-  ]);
-  const emoji = catalog(reader);
-  expect(await emoji.resolve([":Wave:", "wave", "nope", "not valid!"])).toEqual(
-    {
-      found: [{ shortcode: "wave", url: png("newer") }],
-      missing: ["nope"],
-    },
-  );
-  expect(reader.read.mock.calls[0]?.[0]).toEqual([
-    { kinds: [30180], "#d": ["wave", "nope"], limit: 500 },
-  ]);
-  expect(emoji.known()).toEqual([{ shortcode: "wave", url: png("newer") }]);
-  expect((await emoji.resolve(["wave"])).found).toHaveLength(1);
-  expect(reader.read).toHaveBeenCalledTimes(1);
-  expect(await emoji.resolve([])).toEqual({ found: [], missing: [] });
-  expect(reader.read).toHaveBeenCalledTimes(1);
-});
-
-it("rejects a lookup it cannot answer completely", async () => {
-  const names = Array.from(
-    { length: EMOJI_RESOLVE_MAX_NAMES + 1 },
-    (_, i) => `n${i}`,
-  );
-  const reader = relay(async () => {
-    throw new ReadError("unavailable", "down", 503);
-  });
-  const emoji = catalog(reader);
-  await expect(emoji.resolve(names)).rejects.toBeInstanceOf(RangeError);
-  await expect(emoji.resolve(["wave"])).rejects.toThrow("down");
-  reader.read.mockResolvedValueOnce(
-    Array.from({ length: 500 }, (_, i) =>
-      entry("wave", png(`${i}`), { at: i }),
-    ),
-  );
-  await expect(emoji.resolve(["wave"])).rejects.toThrow("incomplete");
-  expect(emoji.known()).toEqual([]);
-});
-
 it("rejects every lookup after disposal", async () => {
   const emoji = createEmojiCatalog(relay());
   emoji.dispose();
   await expect(emoji.search("party")).rejects.toMatchObject({
-    name: "AbortError",
-  });
-  await expect(emoji.resolve(["party"])).rejects.toMatchObject({
     name: "AbortError",
   });
 });
@@ -328,4 +280,30 @@ it("lets a message use a catalog emoji it has read, with the legacy catalog winn
   directory.clear();
   await directory.queries.ensure();
   expect(directory.tags(":party_parrot:")).toEqual([]);
+});
+
+it("serves a fresh prefix from memory and keeps what it offers usable in a message", async () => {
+  const reader = relay(async () => [entry("party_parrot")]);
+  const directory = createEmojiDirectory(reader);
+  owners.push(directory);
+  const { queries } = directory;
+  await queries.ensure();
+  expect(queries.cached("par")).toBeUndefined();
+  await queries.search("par");
+  for (let batch = 0; batch < 10; batch++) {
+    reader.read.mockResolvedValueOnce(
+      Array.from({ length: 50 }, (_, index) => entry(`bulk${batch}_${index}`)),
+    );
+    await queries.search(`bulk${batch}`);
+  }
+  expect(
+    queries.known().some((item) => item.shortcode === "party_parrot"),
+  ).toBe(false);
+  expect(queries.cached("PAR")).toEqual([
+    { shortcode: "party_parrot", url: png("party_parrot") },
+  ]);
+  expect(directory.tags(":party_parrot:")).toEqual([
+    ["emoji", "party_parrot", png("party_parrot")],
+  ]);
+  expect(queries.cached("p")).toBeUndefined();
 });

@@ -181,9 +181,8 @@ passes `retry`. The signal and a session-wide fence both cancel a read without
 counting as a failure. Results are kept per prefix for 60 seconds (64 prefixes);
 `known()` lists up to 500 catalog emoji already read, and `message` tag resolution
 consults them after the set catalog, which wins a shortcode both have.
-`session.emoji.resolve(names, { signal })` does an exact `#d` lookup of at most 50
-names, answering `{ found, missing }`; a failed or possibly truncated read rejects.
-Clearing the directory (access change, cache clear) or disposing it drops all of
+`session.emoji.cached(prefix)` answers a still-fresh prefix from memory without a
+read, and keeps those entries in `known()` as a search does. Clearing the directory (access change, cache clear) or disposing it drops all of
 this state, so a community switch leaks nothing: it is session-owned, not
 module-level. A relay that does not store 30180, or whose search index omits it,
 answers `[]`, which this client cannot tell from "no match"; it then shows the
@@ -192,8 +191,11 @@ set-catalog results exactly as before.
 The Emoji completion starts one search 250 ms after the last keystroke, cancels it
 when the query changes, and merges the answer with the set catalog and `known()`
 before ranking. It shows `Community emoji search unavailable; showing loaded
-emoji.` with Retry when the read fails. The closing colon replaces an exact Unicode
-shortcode only after that search has settled. A host that cannot search (the
+emoji.` with Retry when the read fails, and searches again, once, when a session
+clear cancels the read. A prefix that `cached` holds skips the pause and the read.
+The closing colon does not wait for the search: it replaces the exact shortcode
+found in the Unicode list, the set catalog and `known()`, and a namesake the search
+adds later makes it ambiguous. A host that cannot search (the
 detached huddle composer) skips it. Sending still resolves `:shortcodes:` from the
 set catalog and `known()` only; async resolution of other catalog names, and the
 picker's search box, are not built yet.
