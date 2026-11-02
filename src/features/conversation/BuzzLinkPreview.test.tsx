@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { BuzzLinkPreview } from "./BuzzLinkPreview";
+import { BuzzLinkPreview, previewFailures } from "./BuzzLinkPreview";
 import type { RelaySession } from "../relay/session";
 import type { ThreadSnapshot, ThreadView } from "../relay/threads";
-import type { ChannelMessage } from "../relay/contracts";
+import type { ChannelMessage, ChannelReference } from "../relay/contracts";
 import { mediaUrl } from "../relay/transport";
 
 afterEach(cleanup);
@@ -22,21 +22,48 @@ const root: ChannelMessage = {
   reactions: [],
   replyCount: 0,
 };
+/** Without a `reference`, the session offers no channel lookup, as a
+ * cached-only one doesn't. Each read starts at the next of `snapshots`; the
+ * last repeats. */
 function setup(
-  snapshot: ThreadSnapshot,
+  snapshots: ThreadSnapshot | readonly ThreadSnapshot[],
   messageId = root.id,
   profiles = new Map<string, { name?: string; picture?: string }>(),
+  reference?: ChannelReference,
 ) {
-  const view = {
-    snapshot: () => snapshot,
-    subscribe: () => () => {},
-    refresh: vi.fn(async () => {}),
-    loadMore: vi.fn(async () => {}),
-    retarget: vi.fn<ThreadView["retarget"]>(async () => "selected"),
-    dispose: vi.fn(),
-  } satisfies ThreadView;
-  const thread = vi.fn(() => view);
-  const list = { channels: [{ id: "channel", name: "General" }] };
+  const views: { view: ThreadView; publish(next: ThreadSnapshot): void }[] = [];
+  const starts = [snapshots].flat();
+  const thread = vi.fn(() => {
+    let current = starts[Math.min(views.length, starts.length - 1)] ?? base;
+    const listeners = new Set<() => void>();
+    const view = {
+      snapshot: () => current,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      refresh: vi.fn(async () => {}),
+      loadMore: vi.fn(async () => {}),
+      retarget: vi.fn<ThreadView["retarget"]>(async () => "selected"),
+      dispose: vi.fn(),
+    } satisfies ThreadView;
+    views.push({
+      view,
+      publish(next) {
+        current = next;
+        act(() => {
+          for (const listener of listeners) listener();
+        });
+      },
+    });
+    return view;
+  });
+  let list = {
+    status: "ready",
+    channels: [{ id: "channel", name: "General" }],
+  };
+  let described = reference;
+  const listListeners = new Set<() => void>();
   const session = {
     thread,
     profiles: {
@@ -45,8 +72,15 @@ function setup(
       ensure: vi.fn(async () => {}),
     },
     channels: {
-      subscribeList: () => () => {},
+      subscribeList: (listener: () => void) => {
+        listListeners.add(listener);
+        return () => listListeners.delete(listener);
+      },
       list: () => list,
+      ...(reference && {
+        describe: () => described,
+        refer: vi.fn(() => () => {}),
+      }),
     },
     // The real sizing rewrite behind a pass-through proxy, as the session applies it.
     media: (url: string, size?: "small") =>
@@ -59,7 +93,19 @@ function setup(
       messageId={messageId}
     />,
   );
-  return { tree: mounted.container, thread };
+  return {
+    tree: mounted.container,
+    thread,
+    views,
+    /** The channel lookup answers, as the store notifies list subscribers. */
+    answer(next: ChannelReference) {
+      described = next;
+      list = { ...list };
+      act(() => {
+        for (const listener of listListeners) listener();
+      });
+    },
+  };
 }
 const base: ThreadSnapshot = {
   status: "idle",
@@ -85,27 +131,88 @@ it("does not paint the seed root until the snapshot reconciles edits and deletio
   const ready = setup({ ...base, status: "ready", root }).tree;
   expect(ready.querySelector("strong")).not.toBeNull();
 });
-it("reports terminal unavailability instead of loading forever", () => {
+const open: ChannelReference = {
+  state: "found",
+  name: "open",
+  channelType: "stream",
+  private: false,
+  hidden: false,
+  archived: false,
+  joined: false,
+};
+const purged: ThreadSnapshot = {
+  ...base,
+  status: "idle",
+  error: "This channel is no longer available.",
+};
+it("says why each stopped read fails instead of loading forever, and that the card opens", () => {
+  const failed = setup({ ...base, status: "error", error: "read failed" });
+  expect(text(failed.tree)).toBe(previewFailures.unavailable);
+  expect(failed.tree.textContent).toContain("Open link");
   // purge() on a denied or revoked channel publishes idle + an error string,
-  // never status "error"; the card must still stop.
-  const denied = setup({
-    ...base,
-    status: "idle",
-    error: "This channel is no longer available.",
-  }).tree;
-  expect(text(denied)).toBe("Message preview unavailable.");
-  const failed = setup({
-    ...base,
-    status: "error",
-    error: "read failed",
-  }).tree;
-  expect(text(failed)).toBe("Message preview unavailable.");
-  const exhausted = setup({
-    ...base,
-    status: "ready",
-    root: undefined,
-  }).tree;
-  expect(text(exhausted)).toBe("Message preview unavailable.");
+  // never status "error". With no lookup to wait for, the card still stops.
+  expect(text(setup(purged).tree)).toBe(previewFailures.unavailable);
+  const exhausted = setup({ ...base, status: "ready", root: undefined });
+  expect(text(exhausted.tree)).toBe(previewFailures["not-found"]);
+  // A readable channel without the message names the channel.
+  const missing = setup(
+    { ...base, status: "ready", targetStatus: "unavailable" },
+    root.id,
+    undefined,
+    open,
+  );
+  expect(text(missing.tree)).toBe(previewFailures["not-found"]);
+  expect(missing.tree.querySelector("strong")?.textContent).toBe("open");
+  expect(missing.tree.textContent).toContain("Public channel · Not joined");
+  expect(missing.tree.textContent).toContain("Open link");
+  const withheld = setup(base, root.id, undefined, { state: "withheld" });
+  expect(text(withheld.tree)).toBe(previewFailures.withheld);
+  expect(withheld.tree.textContent).toContain("Open link");
+  expect(withheld.thread).not.toHaveBeenCalled();
+});
+it("waits for the channel lookup before trusting a refused read, then reads again", () => {
+  const h = setup([purged, base], root.id, undefined, { state: "unknown" });
+  expect(text(h.tree)).toBe("Loading message…");
+  // Nothing the answer paints, even before the fresh read, is the refusal.
+  const painted: string[] = [];
+  const observer = new MutationObserver((records) => {
+    for (const record of records)
+      for (const node of record.addedNodes)
+        painted.push(node.textContent ?? "");
+  });
+  observer.observe(h.tree, { childList: true, subtree: true });
+  h.answer(open);
+  for (const record of observer.takeRecords())
+    for (const node of record.addedNodes) painted.push(node.textContent ?? "");
+  observer.disconnect();
+  expect(painted.join(" ")).not.toContain(previewFailures.unavailable);
+  expect(h.thread).toHaveBeenCalledTimes(2);
+  expect(h.views[0]?.view.dispose).toHaveBeenCalledOnce();
+  expect(h.views[1]?.view.refresh).toHaveBeenCalledOnce();
+  expect(text(h.tree)).toBe("Loading message…");
+  h.views[1]?.publish({ ...base, status: "ready", root });
+  expect(h.tree.textContent).toContain("reconciled body");
+});
+it("never shows a read that started before the lookup found the channel", () => {
+  const h = setup(
+    [{ ...base, status: "loading", canLoadMore: true }, base],
+    root.id,
+    undefined,
+    { state: "unknown" },
+  );
+  h.answer(open);
+  // The first read's later refusal belongs to a disposed view.
+  h.views[0]?.publish(purged);
+  expect(text(h.tree)).toBe("Loading message…");
+  h.views[1]?.publish({ ...base, status: "ready", root });
+  expect(h.tree.textContent).toContain("reconciled body");
+});
+it("stops reading a channel the lookup withholds", () => {
+  const h = setup(purged, root.id, undefined, { state: "unknown" });
+  h.answer({ state: "withheld" });
+  expect(text(h.tree)).toBe(previewFailures.withheld);
+  expect(h.thread).toHaveBeenCalledOnce();
+  expect(h.views[0]?.view.dispose).toHaveBeenCalledOnce();
 });
 it("keeps loading while a read is genuinely in flight", () => {
   const loading = setup({
@@ -165,7 +272,7 @@ it("fails safely when an exact target timestamp is outside Date range", () => {
     target,
     targetStatus: "ready",
   });
-  expect(text(result.tree)).toBe("Message preview unavailable.");
+  expect(text(result.tree)).toBe(previewFailures.unavailable);
 });
 
 it("labels a workflow preview as automation, with an owner fallback instead of a signer avatar", () => {

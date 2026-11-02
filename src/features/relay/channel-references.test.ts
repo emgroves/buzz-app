@@ -181,7 +181,8 @@ it("forgets withheld answers when the session cache is cleared", async () => {
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "unknown" });
 });
 
-it("describes a joined channel restored from cache as joined", async () => {
+/** A session restored from the device cache with one joined public channel. */
+async function restored(cachedOnly = false) {
   const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
   const owner = createRelaySession(
     {
@@ -190,6 +191,7 @@ it("describes a joined channel restored from cache as joined", async () => {
     },
     {
       prepared: true,
+      cachedOnly,
       persistence: {
         readStartup: async () => ({
           discovery: {
@@ -210,7 +212,11 @@ it("describes a joined channel restored from cache as joined", async () => {
   );
   owners.push(owner);
   await owner.restore();
-  const channels = owner.session.channels;
+  return owner.session.channels;
+}
+
+it("describes a joined channel restored from cache as joined", async () => {
+  const channels = await restored();
   channels.ensureList();
   // The relay hasn't reconfirmed it yet: the store marks it read-only.
   await vi.waitFor(() => expect(channels.get?.(MINE)?.cached).toBe(true));
@@ -220,6 +226,20 @@ it("describes a joined channel restored from cache as joined", async () => {
     joined: true,
     members: 1,
   });
+});
+
+it("offers no lookup from a cached-only session, which still describes its channels", async () => {
+  const channels = await restored(true);
+  expect(channels.list().status).toBe("ready");
+  expect(channels.refer).toBeUndefined();
+  expect(channels.describe?.(MINE)).toMatchObject({
+    state: "found",
+    joined: true,
+  });
+  expect(channels.describe?.(OPEN)).toEqual({ state: "unknown" });
+  // A link still shows what the cache knows.
+  const { result } = renderHook(() => useChannelReference(channels, MINE));
+  expect(result.current).toMatchObject({ state: "found", name: "mine" });
 });
 
 it("retries a mounted link after its failure backoff, then stops once unmounted", async () => {

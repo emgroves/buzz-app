@@ -54,6 +54,12 @@ the interface unless an available tool actually supports that action.
 - **Communities** have their own channels, people, and agents. Switching
   communities changes the available context. You and the person asking may have
   different channel access. A link alone never grants access.
+- **Message link previews** appear when you hover or focus a Buzz message link.
+  When the message can't be shown, the card says why: the channel is private
+  or gone, the message was deleted or the link is from another community, or
+  the preview couldn't load. Links don't record their community, so one from
+  another community looks like a missing message or channel. The card still
+  opens the link.
 - **Manage members** shows **General** access first in the member list. **Public**
   lets people in the community read and new people participate; **View only**
   lets them read; **Private** limits access to people added to the channel.

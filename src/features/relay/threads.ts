@@ -63,6 +63,18 @@ export type ThreadView = {
   retarget(messageId: string, signal: AbortSignal): Promise<ThreadRetarget>;
   dispose(): void;
 };
+/** Why an exact read can't show its target: this channel holds no such message
+ * (`not-found`), or the read failed (`unavailable`). A failed thread read also
+ * fails a target that is its `root`. Undefined while the read may still show it. */
+export function threadFailure(
+  snapshot: ThreadSnapshot,
+  root: boolean,
+): "not-found" | "unavailable" | undefined {
+  if (root && snapshot.status === "error") return "unavailable";
+  if (snapshot.targetStatus === "unavailable") return "not-found";
+  if (snapshot.targetStatus === "error") return "unavailable";
+  return undefined;
+}
 
 /** Session-owned evidence. Finite page cursors NEVER come from the live/local display union. */
 export function createThreadView({

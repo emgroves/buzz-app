@@ -27,7 +27,7 @@ import { XIcon } from "../../shared/design-system/icons/index";
 import type { ConversationExtensions } from "../conversation/contracts";
 import type { ChannelMessage } from "../relay/contracts";
 import type { RelaySession } from "../relay/session";
-import type { ThreadView } from "../relay/threads";
+import { threadFailure, type ThreadView } from "../relay/threads";
 import { useRowProfiles } from "../relay/react";
 import { rowProfileIds } from "../relay/membership";
 import { MessageRow, type MessageLinkOrigin } from "./MessageRow";
@@ -870,28 +870,12 @@ function ThreadMessages({
     complete: completeTarget,
     prepare: prepareTarget,
   });
+  const failure = threadFailure(snapshot, rootTarget);
   useEffect(() => {
-    if (!navigation || navigation.signal.aborted) return;
+    if (!navigation || navigation.signal.aborted || !failure) return;
     // Each failure is shown in the thread, next to its own Try again.
-    if (rootTarget && snapshot.status === "error")
-      navigation.complete({
-        status: "failed",
-        reason: "unavailable",
-        presented: true,
-      });
-    else if (snapshot.targetStatus === "unavailable")
-      navigation.complete({
-        status: "failed",
-        reason: "not-found",
-        presented: true,
-      });
-    else if (snapshot.targetStatus === "error")
-      navigation.complete({
-        status: "failed",
-        reason: "unavailable",
-        presented: true,
-      });
-  }, [navigation, rootTarget, snapshot.status, snapshot.targetStatus]);
+    navigation.complete({ status: "failed", reason: failure, presented: true });
+  }, [navigation, failure]);
   const [sent, setSent] = useState<string>();
   const [replyFocus, setReplyFocus] = useState(0);
   useEffect(() => {

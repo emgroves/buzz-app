@@ -5,17 +5,16 @@ const unknown: ChannelReference = Object.freeze({ state: "unknown" });
 const noop = () => () => {};
 
 /**
- * What a channel-only link can show about a channel the reader may not have
- * joined. The store owns the lookup, its batching, expiry and retry; this
- * hook only demands one while the answer isn't `found` and the list is
- * ready, because discovery owns access.
+ * What a link can show about a channel the reader may not have joined. The
+ * store owns the lookup, its batching, expiry and retry; this hook only
+ * demands one while the answer isn't `found` and the list is ready, because
+ * discovery owns access.
  */
 export function useChannelReference(
   queries: ChannelQueries | undefined,
   channelId: string | undefined,
 ): ChannelReference {
-  const active =
-    channelId && queries?.describe && queries.refer ? queries : undefined;
+  const active = channelId && queries?.describe ? queries : undefined;
   // The list is replaced on every message preview; re-render only when this
   // reference's answer changes.
   const key = useSyncExternalStore(
@@ -38,4 +37,15 @@ export function useChannelReference(
       return active.refer?.(channelId);
   }, [active, channelId, ready, reference.state]);
   return reference;
+}
+
+/** A found channel that a link presents as a channel. DMs and Solo chats keep
+ * their own presentation. */
+export function namedChannel(reference: ChannelReference) {
+  return reference.state === "found" &&
+    !reference.hidden &&
+    reference.channelType !== "dm" &&
+    reference.channelType !== "solo"
+    ? reference
+    : undefined;
 }

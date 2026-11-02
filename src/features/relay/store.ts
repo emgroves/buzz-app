@@ -2780,7 +2780,8 @@ export function createChannelStore(
         ? (publicDirectory.open ?? noOpenDirectory)
         : noOpenDirectory,
     describe: describeReference,
-    refer: referChannel,
+    // A cached-only store never looks a reference up, so it offers no lookup.
+    ...(options.cachedOnly ? {} : { refer: referChannel }),
     refreshRoster,
     subscribeList: (listener: Listener) => subscribe(listListeners, listener),
     window: (channelId: string) =>

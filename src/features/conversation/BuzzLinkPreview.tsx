@@ -5,7 +5,7 @@ import {
 } from "../identity-names/react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { RelaySession } from "../relay/session";
-import type { ThreadView } from "../relay/threads";
+import { threadFailure, type ThreadView } from "../relay/threads";
 import type { ChannelReference } from "../relay/contracts";
 import {
   LightningIcon,
@@ -18,8 +18,22 @@ import styles from "./LinkPreview.module.css";
 import { messagePreviewText } from "./message-preview-text";
 import { avatarMedia } from "../../shared/avatar-source";
 import { sortParticipantNames } from "../identity-names/participant-order";
+import { namedChannel, useChannelReference } from "./channel-reference";
 
-/** Mounted only while a preview is open. The session owns access, edits and deletion. */
+/** Why a message link's preview can't be shown. Surfaces that report a failed
+ * message link use these words too. */
+export const previewFailures = {
+  withheld: "Private channel. You aren’t a member, or it no longer exists.",
+  "not-found":
+    "This message was deleted, or the link is from another community.",
+  unavailable: "Couldn’t load this preview.",
+} as const;
+type FoundChannel = Extract<ChannelReference, { state: "found" }>;
+const loading = <span role="status">Loading message…</span>;
+
+/** Mounted only while a preview is open. The session owns access, edits and
+ * deletion. Like a click, the card looks the channel up before trusting a
+ * refused read: an unjoined public channel is readable once found. */
 export function BuzzLinkPreview({
   session,
   channelId,
@@ -29,23 +43,40 @@ export function BuzzLinkPreview({
   channelId: string;
   messageId: string;
 }) {
-  const [view, setView] = useState<ThreadView>();
-  const [error, setError] = useState(false);
+  const reference = useChannelReference(session.channels, channelId);
+  const found = reference.state === "found";
+  const withheld = reference.state === "withheld";
+  // Finding the channel starts a fresh read, and a read from before it is
+  // never shown; a withheld channel is never read.
+  const [read, setRead] = useState<{
+    view: ThreadView | undefined;
+    found: boolean;
+  }>();
   useEffect(() => {
+    if (withheld) return;
     try {
       const owned = session.thread(channelId, messageId, { exact: true });
-      setView(owned);
+      setRead({ view: owned, found });
       void owned.refresh();
       return () => owned.dispose();
     } catch {
-      setError(true);
+      setRead({ view: undefined, found });
     }
-  }, [session, channelId, messageId]);
-  if (error) return <span role="status">Message preview unavailable.</span>;
-  return view ? (
-    <PreviewContent view={view} session={session} messageId={messageId} />
-  ) : (
-    <span role="status">Loading message…</span>
+  }, [session, channelId, messageId, found, withheld]);
+  const destination = namedChannel(reference);
+  if (withheld) return <PreviewFailure reason="withheld" />;
+  if (read?.found !== found) return loading;
+  if (!read.view)
+    return <PreviewFailure reason="unavailable" channel={destination} />;
+  return (
+    <PreviewContent
+      view={read.view}
+      session={session}
+      messageId={messageId}
+      destination={destination}
+      // A cached-only session never looks one up: its read's answer stands.
+      looking={reference.state === "unknown" && !!session.channels.refer}
+    />
   );
 }
 
@@ -53,10 +84,15 @@ function PreviewContent({
   view,
   session,
   messageId,
+  destination,
+  looking,
 }: {
   view: ThreadView;
   session: RelaySession;
   messageId: string;
+  destination: FoundChannel | undefined;
+  /** The channel lookup hasn't answered, so a refused read may yet succeed. */
+  looking: boolean;
 }) {
   const snapshot = useSyncExternalStore(
     view.subscribe,
@@ -98,12 +134,14 @@ function PreviewContent({
   const ready = target
     ? snapshot.targetStatus === "ready"
     : snapshot.status === "ready";
-  if (!ready || !message)
-    return (
-      <span role="status">
-        {stopped ? "Message preview unavailable." : "Loading message…"}
-      </span>
-    );
+  if (!ready || !message) {
+    if (!stopped || looking) return loading;
+    // The card stops at any failed read, as navigation does at a failed root.
+    const reason =
+      threadFailure(snapshot, true) ??
+      (snapshot.status === "ready" ? "not-found" : "unavailable");
+    return <PreviewFailure reason={reason} channel={destination} />;
+  }
   const displayId = message.workflowOwnerId ?? message.authorId;
   const profile = profiles.get(displayId);
   const resolved = resolveName(
@@ -113,10 +151,11 @@ function PreviewContent({
   const name = message.workflowOwnerId ? workflowLabel(resolved) : resolved;
   const date = new Date(message.createdAt * 1000);
   if (!Number.isFinite(date.getTime()))
-    return <span role="status">Message preview unavailable.</span>;
-  const channel = channels.channels.find(
-    (item) => item.id === message.channelId,
-  );
+    return <PreviewFailure reason="unavailable" channel={destination} />;
+  // An unjoined channel is never listed; its lookup names it.
+  const channel =
+    channels.channels.find((item) => item.id === message.channelId) ??
+    session.channels.get?.(message.channelId);
   const channelName =
     channel?.channelType === "dm" && channel.participants
       ? sortParticipantNames(
@@ -176,14 +215,39 @@ function PreviewContent({
   );
 }
 
+/** A failed preview names its channel when found, says why it failed, and
+ * shows that the card still opens the link. */
+function PreviewFailure({
+  reason,
+  channel,
+}: {
+  reason: keyof typeof previewFailures;
+  channel?: FoundChannel | undefined;
+}) {
+  return (
+    <>
+      {channel && <ChannelByline channel={channel} />}
+      <span role="status">{previewFailures[reason]}</span>
+      <span className={styles.hint}>Open link</span>
+    </>
+  );
+}
+
 /** Hover card for a channel-only link. The store supplies what the reader
  * may see; a nonmember sees an open channel's public metadata, never its
  * roster. */
-export function ChannelLinkPreview({
-  channel,
-}: {
-  channel: Extract<ChannelReference, { state: "found" }>;
-}) {
+export function ChannelLinkPreview({ channel }: { channel: FoundChannel }) {
+  return (
+    <>
+      <ChannelByline channel={channel} />
+      {channel.description && (
+        <span className={styles.message}>{channel.description}</span>
+      )}
+    </>
+  );
+}
+
+function ChannelByline({ channel }: { channel: FoundChannel }) {
   const Icon = channelIcon(channel.private ? { private: true } : undefined);
   const details = [
     channel.private ? "Private channel" : "Public channel",
@@ -194,21 +258,16 @@ export function ChannelLinkPreview({
       : "",
   ].filter(Boolean);
   return (
-    <>
-      <span className={styles.byline}>
-        <Icon aria-hidden="true" size={20} />
-        <span className={styles.metadata}>
-          <span className={styles.author}>
-            <strong>{channel.name}</strong>
-          </span>
-          <span className={styles.channel}>
-            <span>{details.join(" · ")}</span>
-          </span>
+    <span className={styles.byline}>
+      <Icon aria-hidden="true" size={20} />
+      <span className={styles.metadata}>
+        <span className={styles.author}>
+          <strong>{channel.name}</strong>
+        </span>
+        <span className={styles.channel}>
+          <span>{details.join(" · ")}</span>
         </span>
       </span>
-      {channel.description && (
-        <span className={styles.message}>{channel.description}</span>
-      )}
-    </>
+    </span>
   );
 }
