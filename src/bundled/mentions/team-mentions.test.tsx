@@ -175,6 +175,18 @@ function fixture({
         });
       });
     },
+    /** Replace the channel summary, as a new message or metadata change does. */
+    update(patch: Partial<(typeof list.channels)[number]>) {
+      act(() => {
+        list = {
+          ...list,
+          channels: list.channels.map((c) => ({ ...c, ...patch })),
+        };
+        listeners.forEach((f) => {
+          f();
+        });
+      });
+    },
   };
 }
 
@@ -703,5 +715,26 @@ it("an open chooser relabels choices when only names change", async () => {
     for (const listener of listeners) listener();
   });
   expect(screen.getByText("After")).toBeInTheDocument();
+  h.library.dispose();
+});
+
+it("keeps a closed chooser quiet when a message only changes the channel preview", () => {
+  const h = fixture();
+  let renders = 0;
+  let members: readonly string[] | undefined;
+  function Chooser() {
+    renders++;
+    members = useMentionChoices(h.session, "parent", false, "", "closed", false)
+      .channel?.members;
+    return null;
+  }
+  render(<Chooser />);
+  const settled = renders;
+  h.update({ preview: "New message", lastActivityAt: 2 });
+  h.update({ preview: "Another message", lastActivityAt: 3 });
+  expect(renders).toBe(settled);
+  h.update({ members: [h.agent.pubkey, "f".repeat(64)] });
+  expect(renders).toBe(settled + 1);
+  expect(members).toEqual([h.agent.pubkey, "f".repeat(64)]);
   h.library.dispose();
 });
