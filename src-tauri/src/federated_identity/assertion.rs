@@ -39,6 +39,13 @@ fn admission_retired(mutation: bool) -> &'static str {
     }
 }
 
+/// How long before expiry an assertion is refreshed and its socket renewed:
+/// 15 seconds, but at most half its lifetime, so a short-lived assertion
+/// still leaves a socket time to admit.
+fn refresh_margin(lifetime: std::time::Duration) -> std::time::Duration {
+    (lifetime / 2).min(std::time::Duration::from_secs(15))
+}
+
 pub(super) fn monotonic_expiry(
     expires_at: u64,
     wall_now: std::time::SystemTime,
@@ -129,6 +136,11 @@ pub(crate) async fn test_live_authorization(
 impl Assertion {
     pub(crate) fn remaining(&self) -> std::time::Duration {
         self.expires_at.saturating_duration_since(Instant::now())
+    }
+    /// Time until a socket should renew: past this point a new connection
+    /// mints a fresh assertion rather than reusing this one.
+    pub(crate) fn renew_in(&self) -> std::time::Duration {
+        self.refresh_at.saturating_duration_since(Instant::now())
     }
 }
 #[derive(Default)]
@@ -713,7 +725,7 @@ impl FederatedIdentity {
             revision: revision.into(),
             viewer: viewer.into(),
             relay: relay.into(),
-            refresh_at: expires_at - lifetime.min(std::time::Duration::from_secs(15)),
+            refresh_at: expires_at - refresh_margin(lifetime),
         })
     }
 }
@@ -789,6 +801,15 @@ fn validate_jwt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_margin_leaves_short_lifetimes_half_their_time() {
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(refresh_margin(secs(300)), secs(15));
+        assert_eq!(refresh_margin(secs(30)), secs(15));
+        assert_eq!(refresh_margin(secs(10)), secs(5));
+        assert!(refresh_margin(std::time::Duration::ZERO).is_zero());
+    }
 
     #[test]
     fn monotonic_expiry_preserves_subsecond_wall_clock_precision() {

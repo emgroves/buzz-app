@@ -1172,6 +1172,13 @@ export function subscribeRelayTraffic(
     ws.onclose = (event) => {
       // A replaced socket's late close must not spend the current budget.
       if (!valid()) return;
+      // A planned federated renewal of an admitted connection reconnects at
+      // once and quietly; routes resume from their cursors. One that never
+      // authenticated takes the ordinary backoff, so it cannot spin.
+      if (authenticated && (event as { renew?: true } | undefined)?.renew) {
+        log.info(`${peer} renewing federated authorization`);
+        return connect();
+      }
       const reason = event?.code
         ? `Live connection closed (${event.code}${event.reason ? `: ${event.reason}` : ""})`
         : "Live connection closed";

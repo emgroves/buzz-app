@@ -220,3 +220,77 @@ it("keeps the public fallback's close code, so repeated 1008s stop", async () =>
     vi.unstubAllGlobals();
   }
 });
+it("renews an admitted socket at once without a reconnecting state", async () => {
+  vi.useFakeTimers();
+  vi.mocked(invoke).mockImplementation((command) =>
+    Promise.resolve(command === "relay_socket_connect" ? "native" : undefined),
+  );
+  const h = connect();
+  const connects = () =>
+    vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "relay_socket_connect")
+      .length;
+  const relay = (
+    channel: ((event: unknown) => void) | undefined,
+    frame: unknown[],
+  ) => channel?.({ type: "text", data: JSON.stringify(frame) });
+  const admit = async () => {
+    const channel = channels.at(-1);
+    vi.mocked(invoke).mockClear();
+    relay(channel, ["AUTH", "challenge"]);
+    await vi.advanceTimersByTimeAsync(0);
+    const auth = vi
+      .mocked(invoke)
+      .mock.calls.map(([command, args]) =>
+        command === "relay_socket_send"
+          ? JSON.parse((args as { data: string }).data)
+          : undefined,
+      )
+      .find((frame) => frame?.[0] === "AUTH");
+    relay(channel, ["OK", auth[1].id, true]);
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    await admit();
+    expect(h.callbacks.state.mock.lastCall?.[0].status).toBe("connected");
+    const old = channels.at(-1);
+    h.callbacks.state.mockClear();
+    vi.mocked(invoke).mockClear();
+    old?.({ type: "renew" });
+    expect(connects()).toBe(1);
+    expect(h.callbacks.state.mock.lastCall?.[0].status).toBe("connecting");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(channels.at(-1)).not.toBe(old);
+    // The retired socket's late frames no longer reach the live layer.
+    relay(old, ["AUTH", "stale"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "relay_socket_send"),
+    ).toHaveLength(0);
+    await admit();
+    expect(h.callbacks.state.mock.lastCall?.[0].status).toBe("connected");
+    expect(
+      h.callbacks.state.mock.calls.map(([state]) => state.status),
+    ).not.toContain("retrying");
+  } finally {
+    h.owner.dispose();
+  }
+});
+it("backs off a renewal before admission like any other close", async () => {
+  vi.useFakeTimers();
+  vi.mocked(invoke).mockImplementation((command) =>
+    Promise.resolve(command === "relay_socket_connect" ? "native" : undefined),
+  );
+  const h = connect();
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    channels.at(-1)?.({ type: "renew" });
+    expect(h.callbacks.state.mock.lastCall?.[0].status).toBe("retrying");
+  } finally {
+    h.owner.dispose();
+  }
+});
