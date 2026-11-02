@@ -670,12 +670,27 @@ it.each([
       .respond([
         roster(relay, "alpha", [viewer.pubkey, alice.pubkey]),
         metadata(relay, "alpha", "Alpha"),
+        roster(relay, "dm", [viewer.pubkey, alice.pubkey]),
+        metadata(relay, "dm", "Direct", undefined, [["t", "dm"]]),
       ]);
     await vi.waitFor(() => expect(queries.list().status).toBe("ready"));
     await vi.waitFor(() => expect(writeStartup).toHaveBeenCalled());
     writeStartup.mockClear();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    for (const person of [keypair(), keypair()]) {
+    // The snapshot saves only DM participants' profiles; others change nothing.
+    const stranger = keypair();
+    const ensuring = owner.session.profiles.ensure(
+      [stranger.pubkey],
+      "foreground",
+    );
+    await vi.waitFor(() => expect(scripted.pending).not.toHaveLength(0), {
+      interval: 1,
+    });
+    scripted.next().respond([profile(stranger, { name: "Stranger" })]);
+    await ensuring;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(writeStartup).not.toHaveBeenCalled();
+    for (const person of [alice, keypair()]) {
       const ensuring = owner.session.profiles.ensure(
         [person.pubkey],
         "foreground",
