@@ -44,6 +44,11 @@ export function BuzzLinkPreview({
   messageId: string;
 }) {
   const reference = useChannelReference(session.channels, channelId);
+  const listLoading = useSyncExternalStore(
+    session.channels.subscribeList,
+    () => session.channels.list().status === "loading",
+    () => false,
+  );
   const found = reference.state === "found";
   const withheld = reference.state === "withheld";
   // Finding the channel starts a fresh read, and a read from before it is
@@ -74,9 +79,11 @@ export function BuzzLinkPreview({
       session={session}
       messageId={messageId}
       destination={destination}
-      // Without a lookup on the way (the list isn't ready, a failed one is
+      // A lookup is on the way while one is queued or in flight, or while
+      // discovery is still loading the list, which then either looks the
+      // channel up or errors. Otherwise (the list errored, a failed lookup is
       // backing off, or the store is cached-only), the read's answer stands.
-      looking={reference.state === "looking"}
+      looking={reference.state === "looking" || listLoading}
     />
   );
 }
@@ -92,8 +99,7 @@ function PreviewContent({
   session: RelaySession;
   messageId: string;
   destination: FoundChannel | undefined;
-  /** A channel lookup is queued or in flight, so a refused read may yet
-   * succeed. */
+  /** A channel lookup is on the way, so a refused read may yet succeed. */
   looking: boolean;
 }) {
   const snapshot = useSyncExternalStore(

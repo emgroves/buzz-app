@@ -108,7 +108,9 @@ it("coalesces lookups, describes an open channel and withholds a private one", a
   h.channels.refer?.(SECRET);
   h.channels.refer?.(OPEN);
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "looking" });
-  expect(notified).toHaveBeenCalled();
+  // One batch tells its links once.
+  await flush();
+  expect(notified).toHaveBeenCalledOnce();
   await h.lookup([OPEN, SECRET], [open(OPEN, "crew")]);
   expect(h.channels.describe?.(OPEN)).toEqual({
     state: "found",
@@ -133,8 +135,13 @@ it("keeps a withheld answer for five minutes, then rechecks it while still showi
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(h.pending).toHaveLength(0);
   h.tick(1);
+  const notified = vi.fn();
+  h.channels.subscribeList(notified);
   h.channels.refer?.(SECRET);
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "withheld" });
+  // Nothing on screen changes, so the recheck tells no link.
+  await flush();
+  expect(notified).not.toHaveBeenCalled();
   // The channel has since become public.
   await h.lookup([SECRET], [open(SECRET, "launch")]);
   expect(h.channels.describe?.(SECRET)).toMatchObject({
@@ -183,6 +190,40 @@ it("forgets withheld answers when the session cache is cleared", async () => {
   await h.owner.clearCache();
   // Still demanded, it is looked up again.
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "looking" });
+});
+
+it("tells a cache reset's links once for the whole batch, however many it demands", async () => {
+  const h = await setup();
+  const ids = [SECRET, `${SECRET.slice(0, -1)}4`, `${SECRET.slice(0, -1)}5`];
+  for (const id of ids) h.channels.refer?.(id);
+  await h.lookup(ids, []);
+  const notified = vi.fn();
+  h.channels.subscribeList(notified);
+  await h.owner.clearCache();
+  await flush();
+  for (const id of ids)
+    expect(h.channels.describe?.(id)).toEqual({ state: "looking" });
+  // Once for the reset, and once more as their lookup starts.
+  expect(notified).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a queued lookup on its way when a link's listener throws", async () => {
+  const h = await setup();
+  let queueing = false;
+  h.channels.subscribeList(() => {
+    if (queueing) throw new Error("listener failed");
+  });
+  queueing = true;
+  try {
+    h.channels.refer?.(SECRET);
+  } catch {
+    // Whatever a listener does, the lookup it reports must still run.
+  } finally {
+    queueing = false;
+  }
+  expect(h.channels.describe?.(SECRET)).toEqual({ state: "looking" });
+  await h.lookup([SECRET], []);
+  expect(h.channels.describe?.(SECRET)).toEqual({ state: "withheld" });
 });
 
 /** A session restored from the device cache with one joined public channel. */
@@ -250,6 +291,8 @@ it("retries a mounted link after its failure backoff, then stops once unmounted"
   const h = await setup();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const link = renderHook(() => useChannelReference(h.channels, SECRET));
+  // The lookup's batch tells the link it is on the way.
+  await flush();
   expect(link.result.current).toEqual({ state: "looking" });
   // The failure itself tells the link that nothing is on the way.
   await h.lookup([SECRET], new Error("503"));

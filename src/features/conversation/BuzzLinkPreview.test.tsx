@@ -104,10 +104,11 @@ function setup(
     thread,
     views,
     refer,
-    /** The channel lookup answers, as the store notifies list subscribers. */
-    answer(next: ChannelReference) {
+    /** The channel lookup answers, or discovery moves the list on, as the
+     * store notifies list subscribers. */
+    answer(next: ChannelReference, nextStatus = list.status) {
       described = next;
-      list = { ...list };
+      list = { ...list, status: nextStatus };
       act(() => {
         for (const listener of listListeners) listener();
       });
@@ -230,13 +231,16 @@ it("stops waiting when the channel lookup fails while the read is refused", () =
   expect(h.tree.textContent).toContain("Open link");
   expect(h.thread).toHaveBeenCalledOnce();
 });
-it("trusts a refused read while the channel list isn't ready", () => {
-  for (const status of ["loading", "error"] as const) {
-    const h = setup(purged, root.id, undefined, { state: "unknown" }, status);
-    expect(text(h.tree)).toBe(previewFailures.unavailable);
-    expect(h.refer).not.toHaveBeenCalled();
-    cleanup();
-  }
+it("waits while the channel list loads, and trusts a refused read once it errors", () => {
+  const h = setup(purged, root.id, undefined, { state: "unknown" }, "loading");
+  // A ready list would look the channel up, so the refusal isn't shown yet.
+  expect(text(h.tree)).toBe("Loading message…");
+  expect(h.refer).not.toHaveBeenCalled();
+  h.answer({ state: "unknown" }, "error");
+  expect(text(h.tree)).toBe(previewFailures.unavailable);
+  expect(h.tree.textContent).toContain("Open link");
+  expect(h.refer).not.toHaveBeenCalled();
+  expect(h.thread).toHaveBeenCalledOnce();
 });
 it("keeps loading while a read is genuinely in flight", () => {
   const loading = setup({

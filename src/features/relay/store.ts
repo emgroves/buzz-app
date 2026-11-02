@@ -2680,8 +2680,6 @@ export function createChannelStore(
     )
       return;
     state.queue.add(id);
-    // Its links now wait for this answer.
-    notify(listListeners);
     if (state.scheduled) return;
     state.scheduled = true;
     // `state` is shared across epochs; this batch belongs to this one.
@@ -2724,6 +2722,9 @@ export function createChannelStore(
           },
         );
       }
+      // Their links now wait for these answers, once per batch and after the
+      // reads start. A withheld answer stays on screen while it is rechecked.
+      if (ids.some((id) => !state.withheld.has(id))) notify(listListeners);
     });
   }
   function referChannel(id: string) {

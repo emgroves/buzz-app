@@ -283,8 +283,9 @@ export interface ChannelQueries {
    * returned release. The store coalesces requests into bounded reads, keeps
    * a `withheld` answer for a few minutes, backs off after failures,
    * rechecks demanded references when either ends, and notifies list
-   * subscribers when a lookup starts or ends. Absent when no lookup can run,
-   * as in a cached-only store. */
+   * subscribers once per batch as a lookup starts (unless it only rechecks
+   * withheld answers) and when it ends. Absent when no lookup can run, as in
+   * a cached-only store. */
   refer?(channelId: string): () => void;
   /** Exact re-read of one already-listed channel's roster, merged into the
    * ready list. `resolve` admits channels the list lacks; this confirms a

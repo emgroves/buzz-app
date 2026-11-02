@@ -31,11 +31,13 @@ export function useChannelReference(
     [key],
   );
   // Mounted links hold the demand, so the store rechecks them when an answer
-  // expires or a failure's backoff ends.
+  // expires or a failure's backoff ends. Moving between answers that aren't
+  // `found` keeps the same demand.
+  const found = reference.state === "found";
   useEffect(() => {
-    if (active && channelId && ready && reference.state !== "found")
+    if (active && channelId && ready && !found)
       return active.refer?.(channelId);
-  }, [active, channelId, ready, reference.state]);
+  }, [active, channelId, ready, found]);
   return reference;
 }
 
