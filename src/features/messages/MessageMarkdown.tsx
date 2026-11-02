@@ -593,6 +593,8 @@ function PreparedMessageMarkdown({
   const renderText = (text: string) => {
     let offset = 0;
     return messageLinkParts(text).map((part) => {
+      // A trailing bare link yields two empty text parts at the same offset.
+      if (!part.url && !part.text) return null;
       const key = `${offset}:${part.text}`;
       offset += part.text.length;
       return part.url ? (

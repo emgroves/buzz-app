@@ -787,6 +787,18 @@ describe("Markdown inline extensions", () => {
     expect(html).toContain("PLUGIN :party_parrot: @Mic</span>");
   });
 
+  it("renders a message ending in a bare Buzz link without duplicate React keys", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const content = "see buzz://channel/x";
+    const { container } = renderDom(
+      <MessageMarkdown {...props(content, { extensions })} />,
+    );
+    expect(container.textContent).toBe(content);
+    expect(
+      error.mock.calls.filter((call) => String(call[0]).includes("same key")),
+    ).toEqual([]);
+  });
+
   it.each(["http", "https"])(
     "keeps emoji shortcodes and encoded punctuation verbatim inside bare %s links",
     (scheme) => {
