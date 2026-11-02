@@ -70,9 +70,12 @@ function setup(
   let described = reference;
   const listListeners = new Set<() => void>();
   // As in the store, a demanded lookup is on the way at once, and its batch
-  // tells list subscribers from a microtask.
+  // tells list subscribers from a microtask. A found channel keeps its name.
   const refer = vi.fn(() => {
-    described = { state: "looking" };
+    described =
+      described?.state === "found"
+        ? { ...described, looking: true }
+        : { state: "looking" };
     queueMicrotask(() => {
       for (const listener of listListeners) listener();
     });
@@ -271,6 +274,26 @@ it("waits for the lookup a ready list starts, then reads again", async () => {
   expect(text(h.tree)).toBe("Loading message…");
   h.views[1]?.publish({ ...base, status: "ready", root });
   expect(h.tree.textContent).toContain("reconciled body");
+});
+it("looks up a channel the viewer left before trusting a refused read, then reads again", async () => {
+  // Discovery stopped admitting it, though its open metadata still names it.
+  const h = setup([purged, base], root.id, undefined, {
+    ...(open as Extract<ChannelReference, { state: "found" }>),
+    readable: false,
+  });
+  await act(async () => {});
+  expect(h.refer).toHaveBeenCalledOnce();
+  expect(text(h.tree)).toBe("Loading message…");
+  expect(h.thread).toHaveBeenCalledOnce();
+  // The lookup admits it again with the same metadata.
+  h.answer(open);
+  expect(h.thread).toHaveBeenCalledTimes(2);
+  expect(h.views[0]?.view.dispose).toHaveBeenCalledOnce();
+  expect(h.views[1]?.view.refresh).toHaveBeenCalledOnce();
+  expect(text(h.tree)).toBe("Loading message…");
+  h.views[1]?.publish({ ...base, status: "ready", root });
+  expect(h.tree.textContent).toContain("reconciled body");
+  expect(h.refer).toHaveBeenCalledOnce();
 });
 it("keeps loading while a read is genuinely in flight", () => {
   const loading = setup({

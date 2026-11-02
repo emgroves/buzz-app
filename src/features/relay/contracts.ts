@@ -232,6 +232,11 @@ export type ChannelReference =
       joined: boolean;
       /** Only when the viewer may see the roster. */
       members?: number;
+      /** A public channel the viewer left is named by its open metadata, but
+       * its messages stay unreadable until a lookup confirms it is still
+       * open; `looking` while that lookup is queued or in flight. */
+      readable?: false;
+      looking?: true;
     }>;
 /** Reads are side-effect-free; snapshots retain identity until their value changes.
  * Commands are idempotent requests; the store decides whether network work is needed. */
@@ -279,8 +284,8 @@ export interface ChannelQueries {
   >[];
   /** Current reference state from local evidence; never reads. */
   describe?(channelId: string): ChannelReference;
-  /** Demand a background lookup for a reference that isn't `found`, until the
-   * returned release. The store coalesces requests into bounded reads, keeps
+  /** Demand a background lookup for a reference that isn't `found`, or is
+   * found but not `readable`, until the returned release. The store coalesces requests into bounded reads, keeps
    * a `withheld` answer for a few minutes, backs off after failures,
    * rechecks demanded references when either ends, and notifies list
    * subscribers once per batch as a lookup starts (unless it only rechecks

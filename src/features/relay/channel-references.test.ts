@@ -167,7 +167,7 @@ it("never reports a failed lookup as withheld, and backs off before retrying", a
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "withheld" });
 });
 
-it("describes a public channel the viewer left as public and not joined", async () => {
+it("names a public channel the viewer left, and looks it up until it is readable again", async () => {
   const h = await setup();
   h.emit([roster(relay, MINE, [], 1_700_000_001)]);
   await vi.waitFor(() => expect(h.channels.get?.(MINE)).toBeUndefined());
@@ -176,9 +176,26 @@ it("describes a public channel the viewer left as public and not joined", async 
     name: "mine",
     private: false,
     joined: false,
+    readable: false,
   });
+  // Its open metadata still names it, but discovery no longer admits reading
+  // it, so a mounted link demands a lookup and keeps the name meanwhile.
+  const link = renderHook(() => useChannelReference(h.channels, MINE));
+  await flush();
+  expect(link.result.current).toMatchObject({
+    state: "found",
+    name: "mine",
+    readable: false,
+    looking: true,
+  });
+  await h.lookup([MINE], [open(MINE, "mine")]);
+  expect(h.channels.get?.(MINE)).toMatchObject({ readOnly: true });
+  expect(link.result.current).toMatchObject({ state: "found", name: "mine" });
+  expect(link.result.current).not.toHaveProperty("readable");
+  expect(link.result.current).not.toHaveProperty("looking");
+  // Readable again, it is never looked up for another link.
   h.channels.refer?.(MINE);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flush();
   expect(h.pending).toHaveLength(0);
 });
 

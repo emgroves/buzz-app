@@ -33,7 +33,8 @@ const loading = <span role="status">Loading message…</span>;
 
 /** Mounted only while a preview is open. The session owns access, edits and
  * deletion. Like a click, the card looks the channel up before trusting a
- * refused read: an unjoined public channel is readable once found. */
+ * refused read: an unjoined public channel is readable once found, and one
+ * the viewer left once a lookup confirms it is still open. */
 export function BuzzLinkPreview({
   session,
   channelId,
@@ -49,28 +50,28 @@ export function BuzzLinkPreview({
     () => session.channels.list().status === "loading",
     () => false,
   );
-  const found = reference.state === "found";
+  const readable = reference.state === "found" && reference.readable !== false;
   const withheld = reference.state === "withheld";
-  // Finding the channel starts a fresh read, and a read from before it is
-  // never shown; a withheld channel is never read.
+  // A channel becoming readable starts a fresh read, and a read from before
+  // it is never shown; a withheld channel is never read.
   const [read, setRead] = useState<{
     view: ThreadView | undefined;
-    found: boolean;
+    readable: boolean;
   }>();
   useEffect(() => {
     if (withheld) return;
     try {
       const owned = session.thread(channelId, messageId, { exact: true });
-      setRead({ view: owned, found });
+      setRead({ view: owned, readable });
       void owned.refresh();
       return () => owned.dispose();
     } catch {
-      setRead({ view: undefined, found });
+      setRead({ view: undefined, readable });
     }
-  }, [session, channelId, messageId, found, withheld]);
+  }, [session, channelId, messageId, readable, withheld]);
   const destination = namedChannel(reference);
   if (withheld) return <PreviewFailure reason="withheld" />;
-  if (read?.found !== found) return loading;
+  if (read?.readable !== readable) return loading;
   if (!read.view)
     return <PreviewFailure reason="unavailable" channel={destination} />;
   return (
@@ -83,7 +84,11 @@ export function BuzzLinkPreview({
       // discovery is still loading the list, which then either looks the
       // channel up or errors. Otherwise (the list errored, a failed lookup is
       // backing off, or the store is cached-only), the read's answer stands.
-      looking={reference.state === "looking" || listLoading}
+      looking={
+        reference.state === "looking" ||
+        (reference.state === "found" && !!reference.looking) ||
+        listLoading
+      }
     />
   );
 }

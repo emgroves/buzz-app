@@ -7,8 +7,8 @@ const noop = () => () => {};
 /**
  * What a link can show about a channel the reader may not have joined. The
  * store owns the lookup, its batching, expiry and retry; this hook only
- * demands one while the answer isn't `found` and the list is ready, because
- * discovery owns access.
+ * demands one while the list is ready and the answer isn't a readable
+ * `found`, because discovery owns access.
  */
 export function useChannelReference(
   queries: ChannelQueries | undefined,
@@ -32,12 +32,12 @@ export function useChannelReference(
   );
   // Mounted links hold the demand, so the store rechecks them when an answer
   // expires or a failure's backoff ends. Moving between answers that aren't
-  // `found` keeps the same demand.
-  const found = reference.state === "found";
+  // readable keeps the same demand.
+  const readable = reference.state === "found" && reference.readable !== false;
   useEffect(() => {
-    if (active && channelId && ready && !found)
+    if (active && channelId && ready && !readable)
       return active.refer?.(channelId);
-  }, [active, channelId, ready, found]);
+  }, [active, channelId, ready, readable]);
   return reference;
 }
 
