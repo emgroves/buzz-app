@@ -192,7 +192,6 @@ function Turn({
       : undefined;
   const place = thread(turn, !!open);
   const facts = [
-    turn.endedAt ? duration(turn.endedAt - turn.startedAt) : "",
     ...turn.config,
     turn.source === "heartbeat" ? "heartbeat" : "",
     turn.newSession ? "new session" : "",
@@ -221,6 +220,9 @@ function Turn({
           </>
         )}
         <span data-state={turn.error ? "error" : state}>{status}</span>
+        {!!turn.endedAt && (
+          <span> · {duration(turn.endedAt - turn.startedAt)}</span>
+        )}
         {place && (
           <span>
             {" · "}

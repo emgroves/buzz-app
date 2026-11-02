@@ -341,7 +341,7 @@ it("keeps different threads distinguishable when showing all conversations", () 
       threadRootId,
       triggeringEventIds: [],
       newSession: false,
-      config: [],
+      config: ["gpt-6"],
       startedAt: Date.parse("2026-10-20T12:00:00Z"),
       endedAt: Date.parse("2026-10-20T12:01:00Z"),
       partial: false,
@@ -357,6 +357,10 @@ it("keeps different threads distinguishable when showing all conversations", () 
   );
   expect(screen.getByText("· Thread aaaaaaaa")).toBeVisible();
   expect(screen.getByText("· Thread bbbbbbbb")).toBeVisible();
+  // The place follows the duration and leads the remaining facts.
+  expect(
+    screen.getAllByRole("article")[0]?.querySelector("header")?.textContent,
+  ).toMatch(/Completed · 1m 0s · Thread aaaaaaaa · gpt-6$/);
 });
 
 it("opens a turn's thread or channel from its label, keeping thread labels it can't open as text", () => {
