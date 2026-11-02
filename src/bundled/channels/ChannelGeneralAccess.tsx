@@ -87,6 +87,7 @@ export function ChannelGeneralAccess({
       capability={capability}
       recovery={recovery}
       channelId={channelId}
+      autoJoin={channel?.autoJoin ?? false}
     />
   );
 }
@@ -95,10 +96,12 @@ function ChannelGeneralAccessEditor({
   capability,
   recovery,
   channelId,
+  autoJoin,
 }: {
   capability: ChannelDetailsCapability;
   recovery: RelayRecovery | undefined;
   channelId: string;
+  autoJoin: boolean;
 }) {
   const attempt = useSyncExternalStore(capability.subscribe, () =>
     capability.snapshot(channelId),
@@ -335,6 +338,10 @@ function ChannelGeneralAccessEditor({
                     ? "Everyone in this community will be able to view this chat’s full history."
                     : "Only chat members will have access."
                   : privacyConsequence(choice.visibility)
+                : "",
+              // The relay keeps the flag but refuses changing it on a private channel.
+              choice.visibility === "private" && autoJoin
+                ? "It’s a starter channel, so new members will be added to it again if it’s made public. To stop that, turn off Starter channel for new members in Settings first."
                 : "",
               choice.visibility === "public"
                 ? `New people will ${choice.joinRole === "guest" ? "only be able to view" : "be able to participate"}. People already in the ${place} keep their access.`

@@ -44,8 +44,10 @@ Rejected setup retains input and does not replace the currently selected communi
 An admitted invite is a remote side effect and is not undone if later profile
 setup fails or is cancelled. The relay adds a member newly admitted by an invite
 claim to the community's starter channels, so they are already in the sidebar
-and Messages opens the first of them. In an open community, which needs no
-claim, nobody is added. See [local-first launch](channels.md#local-first-launch).
+and Messages opens the first of them. An open community needs no claim: there
+the relay adds each person, though not agents, to the starter channels they have
+never been in each time they connect, so those channels appear a moment later.
+See [local-first launch](channels.md#local-first-launch).
 
 Profile editing preserves existing fields that this editor does not expose.
 After a confirmed Settings save, the profile also becomes the device-local
