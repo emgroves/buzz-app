@@ -4,9 +4,79 @@ import type {
   HostProcessOptions,
 } from "../../features/host/service";
 import type { Spawn } from "./claude";
-import { fakeSpawn } from "./claude-testing";
+import { fakeSpawn, MODELS, sessionState } from "./claude-testing";
 import script from "./claude.sh?raw";
+import manifest from "./manifest.json";
 import { checkClaude, ClaudeSetup, MIN_VERSION, withScript } from "./setup";
+
+it("declares protected file reads through the bundled helper with a positional path", () => {
+  expect(
+    manifest.host.processes.find((process) => process.id === "read-protected"),
+  ).toEqual({
+    id: "read-protected",
+    program: "buzz-agent-command",
+    bundled: true,
+    args: [
+      "--shell",
+      `case "$1" in "~/"*) set -- "$HOME/\${1:2}";; esac; exec /usr/bin/base64 -i "$1"`,
+      "buzz-read",
+    ],
+  });
+});
+
+it.each([true, false])(
+  "requires the native structured review result when present: %s",
+  async (present) => {
+    const f = fakeSpawn();
+    const setup = new ClaudeSetup(async (id, options) => {
+      const child = await f.spawn(id, options);
+      const fake = f.processes.at(-1);
+      if (!fake) throw new Error("Expected review worker");
+      fake.hold = true;
+      return child;
+    }, vi.fn());
+    const output = { blocked: false, reason: "Requested response delivery" };
+    const prompt = {
+      system: "Assess the evidence without executing it.",
+      input: '{"kind":"tool","content":"Done."}',
+      outputSchema: { type: "object", required: ["blocked", "reason"] },
+    };
+    const reviewing = setup.review(
+      { id: "opus" },
+      prompt,
+      new AbortController().signal,
+    );
+    const checked = present
+      ? expect(reviewing).resolves.toEqual({
+          text: JSON.stringify(output),
+          model: { id: "claude-opus-5-5" },
+        })
+      : expect(reviewing).rejects.toThrow(
+          "The security model returned no structured result",
+        );
+    await vi.waitFor(() =>
+      expect(f.processes[0]?.prompts).toEqual([prompt.input]),
+    );
+    const fake = f.processes[0];
+    if (!fake) throw new Error("Expected review worker");
+    fake.emit({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: present
+        ? "```json\n" + JSON.stringify(output) + "\n```"
+        : JSON.stringify(output),
+      ...(present ? { structured_output: output } : {}),
+    });
+    sessionState(fake, "idle");
+    await checked;
+    expect(fake.options.args).toContain("--json-schema");
+    expect(
+      fake.options.args?.[fake.options.args.indexOf("--json-schema") + 1],
+    ).toBe(JSON.stringify(prompt.outputSchema));
+    expect(fake.killed).toBe(true);
+  },
+);
 
 /** A spawn whose processes print `output[args]` and exit with its code. */
 function scripted(
@@ -182,6 +252,47 @@ it("caches failed model discovery until retry and closes a late probe on disposa
   await pending;
   expect(kill).toHaveBeenCalled();
   expect(setup.snapshot().models).toEqual([]);
+});
+
+/** Health checks answer from a script; `claude` sessions answer like Claude. */
+function discoverable() {
+  const checks = scripted({
+    "claude --version": { stdout: "2.1.200" },
+    "claude auth status --json": { stdout: '{"loggedIn":true}' },
+  });
+  const claude = fakeSpawn();
+  const spawn = vi.fn<Spawn>(async (id, options) =>
+    options?.args?.[0] === "--version" || options?.args?.[0] === "auth"
+      ? checks.spawn(id, options)
+      : claude.spawn(id, options),
+  );
+  return { spawn, sessions: claude.processes };
+}
+
+it("offers the model catalog without the picker, discovering it once for concurrent callers", async () => {
+  const { spawn, sessions } = discoverable();
+  const setup = new ClaudeSetup(spawn);
+  // Nothing has checked Claude or opened the picker yet.
+  expect(setup.snapshot().models).toEqual([]);
+  const [first, second] = await Promise.all([setup.catalog(), setup.catalog()]);
+  expect(first.map((model) => model.value)).toEqual(
+    MODELS.map((model) => model.value),
+  );
+  expect(second).toBe(first);
+  expect(sessions).toHaveLength(1);
+  await setup.catalog();
+  expect(sessions).toHaveLength(1);
+});
+
+it("looks for the catalog again after a discovery that listed nothing", async () => {
+  const { spawn, sessions } = discoverable();
+  const setup = new ClaudeSetup(spawn);
+  await setup.check();
+  spawn.mockRejectedValueOnce(new Error("probe failed"));
+  await expect(setup.catalog()).resolves.toEqual([]);
+  expect(setup.snapshot().modelsError).toBe("probe failed");
+  expect(await setup.catalog()).not.toEqual([]);
+  expect(sessions).toHaveLength(1);
 });
 
 it("bounds a stalled discovery and releases it for an explicit retry", async () => {
@@ -361,10 +472,27 @@ it("starts Claude and its install steps as steps of claude.sh", async () => {
   await run("claude", { args: ["--version"] });
   await run("use", { args: ["2.1.300"] });
   await run("platform");
+  await run("claude", {
+    args: ["--protected"],
+    protection: { readOnlyPaths: [], hiddenPaths: [] },
+  });
+  expect(
+    manifest.host.processes.find(
+      (process) => process.id === "claude-protected-sh",
+    ),
+  ).toMatchObject({
+    program: "buzz-agent-command",
+    bundled: true,
+    args: ["--shell"],
+  });
   expect(calls).toEqual([
     { id: "claude-sh", args: [script, "claude.sh", "run", "--version"] },
     { id: "claude-sh", args: [script, "claude.sh", "use", "2.1.300"] },
     { id: "platform", args: [] },
+    {
+      id: "claude-protected-sh",
+      args: [script, "claude.sh", "run", "--protected"],
+    },
   ]);
 });
 

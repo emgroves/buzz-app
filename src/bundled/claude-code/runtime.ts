@@ -61,6 +61,7 @@ import {
   turnPrompt,
 } from "./prompt";
 import { AgentSessions, localSessions, Spare } from "./sessions";
+import { protectionHistoryEntry } from "./security";
 import {
   readSessionTitle,
   readTranscript,
@@ -117,6 +118,7 @@ const NAMES_TIMEOUT_MS = 2_000;
 const CHAT = [9, 40002];
 
 type Entry = {
+  protected?: boolean;
   sessions: AgentSessions;
   config: Config;
   /** The team sections of the latest run; a change restarts idle sessions. */
@@ -213,22 +215,37 @@ export class ClaudeRuntime {
   /** Brings the runtime in line with this type's agents: changed settings
    * restart idle sessions, removed agents stop, and a spare waits while any
    * agent is here. */
+  private readonly retirements = new Map<string, Promise<void>>();
+  async retire(pubkey: string) {
+    let retiring = this.retirements.get(pubkey);
+    if (!retiring) {
+      retiring = (async () => {
+        const entry = this.agents.get(pubkey);
+        this.agents.delete(pubkey);
+        await entry?.sessions.shutdown();
+      })();
+      this.retirements.set(pubkey, retiring);
+    }
+    await retiring;
+    this.retirements.delete(pubkey);
+  }
   sync(agents: readonly Agent[]) {
     const current = new Set(agents.map((agent) => agent.key));
     // Deleted, signed out or its community disconnected: either way its
     // processes stop. Saved sessions stay so it resumes when it is back.
-    for (const [key, entry] of this.agents)
-      if (!current.has(key)) {
-        entry.sessions.dispose();
-        this.agents.delete(key);
-      }
+    for (const key of this.agents.keys())
+      if (!current.has(key)) void this.retire(key).catch(() => undefined);
     for (const agent of agents) {
+      if (this.retirements.has(agent.key)) continue;
       const next = this.resolveConfig(agent.config);
       const entry = this.agents.get(agent.key);
       if (!entry) {
-        this.entry(agent.key, next).name = agent.name;
+        const created = this.entry(agent.key, next);
+        created.name = agent.name;
+        created.protected = !!agent.protection;
         continue;
       }
+      entry.protected = !!agent.protection;
       if (
         JSON.stringify(entry.config) !== JSON.stringify(next) ||
         entry.name !== agent.name
@@ -239,9 +256,9 @@ export class ClaudeRuntime {
       }
     }
     this.spare.warm(
-      ...agents.map((agent) => ({
-        ...where(this.resolveConfig(agent.config)),
-      })),
+      ...agents
+        .filter((agent) => !agent.protection)
+        .map((agent) => where(this.resolveConfig(agent.config))),
     );
     this.notify();
   }
@@ -883,6 +900,8 @@ export class ClaudeRuntime {
   }
 
   private entry(agent: AgentKey, initial: Config): Entry {
+    if (this.retirements.has(agent))
+      throw new Error("This agent’s previous native sessions have not retired");
     const existing = this.agents.get(agent);
     if (existing) return existing;
     const entry: Entry = {
@@ -897,16 +916,33 @@ export class ClaudeRuntime {
     // it was given, until it is replaced.
     const tools =
       (cwd: string): ToolServer =>
-      async (conversation, message) => {
+      async (conversation, message, signal) => {
         const handle = entry.handle;
         const client =
           handle &&
           appClient(handle, {
+            // Its PreToolUse hook reviews every tool, Buzz's included.
+            nativeToolGate: true,
+            protectionContext: async () => {
+              if (!conversation)
+                throw new Error(
+                  "The native Claude conversation is unavailable",
+                );
+              return entry.sessions.protectionContext(conversation);
+            },
             relayAuthor: this.reads(agent)?.relayAuthor?.(),
             signingAuthority: this.reads(agent)?.workflowAuthority(),
-            read: (path) => readFile(this.spawn, cwd, path),
+            read: (path) =>
+              readFile(
+                this.spawn,
+                cwd,
+                path,
+                undefined,
+                handle.protection?.processProtection,
+              ),
             memories: (slug) => this.memories(agent, slug),
             remembered: () => this.forget(agent),
+            signal,
           });
         const context =
           (conversation && entry.contexts.get(conversation)) || {};
@@ -918,10 +954,26 @@ export class ClaudeRuntime {
           listing(this.added()),
         );
       };
+    const saved = localSessions(this.storage, agent);
     entry.sessions = new AgentSessions({
       spawn: (id, options) => this.spawn(id, options),
       spare: this.spare,
-      store: localSessions(this.storage, agent),
+      store: {
+        get: (key) => {
+          const value = saved.get(key);
+          return value?.protection === entry.handle?.protection?.stateKey
+            ? value
+            : undefined;
+        },
+        set: (key, value) =>
+          saved.set(key, {
+            ...value,
+            ...(entry.handle?.protection
+              ? { protection: entry.handle.protection.stateKey }
+              : {}),
+          }),
+        delete: (key) => saved.delete(key),
+      },
       onChange: () => this.notify(),
       fingerprint: (key) =>
         JSON.stringify([
@@ -937,10 +989,41 @@ export class ClaudeRuntime {
         ]),
       launch: async (key) => {
         const { workspace, instructions, scope } = entry.config;
+        const gate = entry.handle?.protection;
+        if (entry.protected && !gate)
+          throw new Error("The protected agent has no live policy binding");
+        gate?.assertAvailable();
         const memory = await this.core(agent);
         const directories = key ? entry.directories.get(key) : undefined;
         return {
           ...where(entry.config),
+          ...(gate
+            ? {
+                protection: {
+                  gate,
+                  history: async (path: string, signal: AbortSignal) => {
+                    const bytes = await readFile(
+                      this.spawn,
+                      workspace,
+                      path,
+                      signal,
+                      gate.processProtection,
+                    );
+                    const lines = new TextDecoder().decode(bytes).split("\n");
+                    // Claude appends to its transcript as it goes, so the last
+                    // line may still be partial; the next hook reads it whole.
+                    const last = lines.pop() ?? "";
+                    const rows = lines
+                      .filter((line) => line.trim())
+                      .map((line) => JSON.parse(line) as unknown);
+                    try {
+                      if (last.trim()) rows.push(JSON.parse(last));
+                    } catch {}
+                    return rows.map(protectionHistoryEntry);
+                  },
+                },
+              }
+            : {}),
           ...(directories ? { directories } : {}),
           hook: (session, event, input) =>
             this.hook(agent, session, event, input),

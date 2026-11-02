@@ -132,17 +132,21 @@ export async function callSessionTool(
     args = structuredClone(args);
   }
   const session = JSON.stringify(context);
+  // A natively gated call was reviewed with these exact arguments; it is
+  // reviewed again only when a captured file changes what it sends.
+  const reviewed = client.nativeToolGate && JSON.stringify(args);
   // Plugin tools own their argument semantics, even when shadowing a builtin.
   if (client.protect && !added.some((tool) => tool.name === name))
     await captureToolBody(client, name, args).catch((error) =>
       checkedToolError(client, session, error),
     );
-  await client.protect?.({
-    kind: "tool",
-    session,
-    content: { title: name, arguments: args },
-    ...(typeof args.command === "string" ? { command: args.command } : {}),
-  });
+  if (JSON.stringify(args) !== reviewed)
+    await client.protect?.({
+      kind: "tool",
+      session,
+      content: { title: name, arguments: args },
+      ...(typeof args.command === "string" ? { command: args.command } : {}),
+    });
   let reply: Reply;
   try {
     reply = await dispatchSessionTool(client, context, name, args, added);

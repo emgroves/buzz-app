@@ -12,6 +12,16 @@
     "files": true,
     "processes": [
       {
+        "id": "read-protected",
+        "program": "buzz-agent-command",
+        "bundled": true,
+        "args": [
+          "--shell",
+          "case \"$1\" in \"~/\"*) set -- \"$HOME/${1:2}\";; esac; exec /usr/bin/base64 -i \"$1\"",
+          "buzz-read"
+        ]
+      },
+      {
         "id": "claude-sh",
         "program": "bash",
         "args": ["-c"]
@@ -26,7 +36,10 @@
         "program": "base64",
         "args": ["-i"]
       },
-      { "id": "workspace", "program": "pwd" },
+      {
+        "id": "workspace",
+        "program": "pwd"
+      },
       {
         "id": "starts",
         "program": "grep",
@@ -48,6 +61,12 @@
         "id": "list",
         "program": "find",
         "args": [".", "-type", "f", "-name", "*.jsonl"]
+      },
+      {
+        "id": "claude-protected-sh",
+        "program": "buzz-agent-command",
+        "bundled": true,
+        "args": ["--shell"]
       }
     ]
   }

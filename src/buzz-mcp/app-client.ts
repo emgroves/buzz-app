@@ -30,6 +30,8 @@ export function appClient(
     check?(): void;
     signal?: AbortSignal;
     protectionContext?(): Promise<unknown>;
+    /** The runtime reviews each tool call itself before Buzz dispatches it. */
+    nativeToolGate?: boolean;
   }>,
 ): BuzzClient {
   const check = () => {
@@ -72,6 +74,7 @@ export function appClient(
             );
             check();
           },
+          ...(options.nativeToolGate ? { nativeToolGate: true as const } : {}),
         }
       : {}),
     pubkey: agent.pubkey,

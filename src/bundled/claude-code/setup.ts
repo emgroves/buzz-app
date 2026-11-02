@@ -3,6 +3,7 @@
 // process; the copy lives apart from any `claude` the user installed, and
 // shares their `~/.claude` sign-in and settings.
 import type { AgentProviderSnapshot } from "../../features/agents/service";
+import type { ReviewPrompt } from "../../features/agent-protection/models";
 import type {
   HostProcess,
   HostRequest,
@@ -10,6 +11,7 @@ import type {
 } from "../../features/host/service";
 import { ClaudeProcess, ENV, type ClaudeModel, type Spawn } from "./claude";
 import script from "./claude.sh?raw";
+import { PROTECTED_CLAUDE_VERSION, protectedRuntime } from "./security";
 
 export type ClaudeStatus =
   | Readonly<{ state: "missing" }>
@@ -37,6 +39,7 @@ const PLATFORMS: Readonly<Record<string, string>> = {
 /** The `claude.sh` step behind each process the plugin starts by name. */
 const STEPS: Readonly<Record<string, string>> = {
   claude: "run",
+  runtime: "runtime",
   install: "install",
   use: "use",
 };
@@ -47,7 +50,7 @@ export const withScript =
   (id, options) => {
     const step = STEPS[id];
     return step
-      ? spawn("claude-sh", {
+      ? spawn(options?.protection ? "claude-protected-sh" : "claude-sh", {
           ...options,
           args: [script, "claude.sh", step, ...(options?.args ?? [])],
         })
@@ -231,6 +234,8 @@ export class ClaudeSetup {
   private health: AgentProviderSnapshot = { readiness: "checking" };
   private process: HostProcess | undefined;
   private modelRequest: AbortController | undefined;
+  private modelWork: Promise<void> | undefined;
+  private cataloging: Promise<SetupState["models"]> | undefined;
   private modelsLoaded = false;
   /** Cancel was asked for before the running step's process was returned. */
   private cancelled = false;
@@ -311,21 +316,26 @@ export class ClaudeSetup {
     });
   }
 
-  /** Loads optional model copy only for surfaces that display the catalog. */
-  async loadModels(retry = false) {
+  /** Loads optional model copy only for surfaces that display the catalog.
+   * Callers during a load wait for it. */
+  loadModels(retry = false) {
+    if (this.modelRequest) return this.modelWork;
     if (
       !this.spawn ||
       this.state.status?.state !== "ready" ||
       this.state.checking ||
-      this.modelRequest ||
       (this.modelsLoaded && !retry)
     )
-      return;
+      return Promise.resolve();
     const request = new AbortController();
     this.modelRequest = request;
     this.set({ modelsChecking: true, modelsError: "" });
+    this.modelWork = this.discoverModels(this.spawn, request);
+    return this.modelWork;
+  }
+  private async discoverModels(spawn: Spawn, request: AbortController) {
     try {
-      const models = await queryModels(this.spawn, request.signal);
+      const models = await queryModels(spawn, request.signal);
       if (!models.length) throw new Error("Claude did not list its models");
       if (this.modelRequest === request) this.set({ models });
     } catch (error) {
@@ -340,6 +350,18 @@ export class ClaudeSetup {
         this.set({ modelsChecking: false });
       }
     }
+  }
+  /** The catalog for a surface that opens without the model picker: found
+   * once, and looked for again only after a discovery that listed nothing. */
+  catalog() {
+    this.cataloging ??= (async () => {
+      if (!this.state.status) await this.check();
+      await this.loadModels(!this.state.models.length);
+      return this.state.models;
+    })().finally(() => {
+      this.cataloging = undefined;
+    });
+    return this.cataloging;
   }
 
   /** Moves Buzz's copy to the latest release. Unless `needed`, a computer
@@ -500,6 +522,83 @@ export class ClaudeSetup {
     await this.step(spawn, "use", [latest], "Switching");
     this.set({ notice: undefined });
     this.log(`Claude ${latest} is installed.\n`);
+  }
+
+  async review(
+    model: { provider?: string; id: string },
+    prompt: ReviewPrompt,
+    signal: AbortSignal,
+  ) {
+    if (model.provider)
+      throw new Error(
+        "Claude uses its configured native provider; choose another runtime for an explicit provider ID",
+      );
+    if (!this.spawn) throw new Error("Claude review needs the desktop app");
+    signal.throwIfAborted();
+    const worker = await ClaudeProcess.start(this.spawn, {
+      cwd: "~",
+      systemPrompt: prompt.system,
+      discovery: true,
+      ...(prompt.outputSchema ? { outputSchema: prompt.outputSchema } : {}),
+      ...(model.id ? { model: model.id } : {}),
+    });
+    const timeout = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+    const cancel = () => void worker.kill();
+    timeout.addEventListener("abort", cancel, { once: true });
+    try {
+      timeout.throwIfAborted();
+      const result = await worker.send(prompt.input);
+      timeout.throwIfAborted();
+      if (!result.ok)
+        throw new Error(result.error ?? "The security model did not complete");
+      return {
+        text: prompt.outputSchema ? worker.structuredResult : worker.result,
+        model: { id: worker.model ?? model.id },
+      };
+    } finally {
+      timeout.removeEventListener("abort", cancel);
+      await worker.kill();
+      await worker.exited;
+    }
+  }
+
+  private protectedDownload: Promise<void> | undefined;
+  async protectedInstalled(signal: AbortSignal) {
+    signal.throwIfAborted();
+    const spawn = this.spawn;
+    if (!spawn) throw new Error("Protected Claude needs the desktop app");
+    try {
+      await protectedRuntime(spawn);
+      signal.throwIfAborted();
+      return;
+    } catch {
+      signal.throwIfAborted();
+    }
+    this.protectedDownload ??= (async () => {
+      const platform =
+        PLATFORMS[(await collect(spawn, "platform", [])).stdout.trim()];
+      if (!platform)
+        throw new Error("Claude is not available for this computer");
+      const manifest = JSON.parse(
+        await this.fetch(`${PROTECTED_CLAUDE_VERSION}/manifest.json`),
+      ) as { platforms?: Record<string, { checksum?: string }> };
+      const checksum = manifest.platforms?.[platform]?.checksum;
+      if (!checksum || !/^[a-f0-9]{64}$/.test(checksum))
+        throw new Error("The protected Claude release has no valid checksum");
+      const process = await spawn("install", {
+        args: [PROTECTED_CLAUDE_VERSION, platform, checksum],
+      });
+      if ((await process.exited) !== 0)
+        throw new Error("The protected Claude runtime could not be installed");
+      await protectedRuntime(spawn);
+    })();
+    const work = this.protectedDownload;
+    try {
+      await work;
+      signal.throwIfAborted();
+    } finally {
+      if (this.protectedDownload === work) this.protectedDownload = undefined;
+    }
   }
 
   /** Sends a line to the running step, such as a sign-in code. */

@@ -137,9 +137,10 @@ it.each([false, true])(
     const protect = vi.fn<NonNullable<BuzzClient["protect"]>>(async () => {});
     const client = new Proxy({} as BuzzClient, {
       get(_target, property) {
-        // The shared session gate checks this optional hook before dispatch.
+        // The shared session gate checks these optional hooks before dispatch.
         if (property === "protect")
           return protectedSession ? protect : undefined;
+        if (property === "nativeToolGate") return undefined;
         throw new Error(`Help must not access the host: ${String(property)}`);
       },
     });

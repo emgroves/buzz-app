@@ -8,7 +8,7 @@
 set -eu
 
 # Shared by every Buzz build on this computer, so there is one download.
-if [ "$(uname)" = Darwin ]; then
+if [ "$(/usr/bin/uname)" = Darwin ]; then
   dir="$HOME/Library/Application Support/Buzz/claude-code"
 else
   dir="${XDG_DATA_HOME:-$HOME/.local/share}/buzz/claude-code"
@@ -28,9 +28,30 @@ newer() {
   }'
 }
 
+# Trusted pins from https://downloads.claude.ai/claude-code-releases/2.1.305/manifest.json.
+# Recheck cached bytes both during discovery and immediately before protected exec.
+verify_protected() {
+  [ "$1" = "2.1.305" ] || { echo "Unsupported protected Claude release" >&2; exit 1; }
+  case "$(/usr/bin/uname -sm)" in
+  "Darwin arm64") checksum=ea3ea3c08d2a9634a4651e687fcf900d410c489bce2b00f22bd7352b91ba704f ;;
+  "Darwin x86_64") checksum=af7ad8d6d8b1e49059988f6657d91bb8b9feac127bf8bec005c4c27d0093f153 ;;
+  "Linux aarch64") checksum=5265a60217e667b75e126e887b49ac0f168ad8bb13c605c3e3df528519876dc0 ;;
+  "Linux x86_64") checksum=86cb722ab68348877dba7971e4d0c659919e05e6228c05e006e83da320e656ef ;;
+  *) echo "Unsupported protected Claude platform" >&2; exit 1 ;;
+  esac
+  actual=$( (/usr/bin/shasum -a 256 "$dir/$1/claude" 2>/dev/null || /usr/bin/sha256sum "$dir/$1/claude") | /usr/bin/cut -d" " -f1)
+  [ "$actual" = "$checksum" ] || { echo "The protected Claude executable did not match its checksum" >&2; exit 1; }
+}
+
 command="$1"
 shift
 case "$command" in
+runtime)
+  version="${BUZZ_CLAUDE_VERSION:-$(cat "$dir/current" 2>/dev/null)}"
+  valid "$version" && test -x "$dir/$version/claude" || exit 127
+  verify_protected "$version"
+  perl -MCwd=abs_path -MJSON::PP -e 'print JSON::PP->new->encode({version=>$ARGV[0],root=>abs_path($ARGV[1])})' "$version" "$dir"
+  ;;
 run)
   # A failed exec returns (execfail, without errexit), so the launcher can
   # look again when a release it read was pruned before it started.
@@ -41,6 +62,9 @@ run)
     version="${BUZZ_CLAUDE_VERSION:-$(cat "$dir/current" 2>/dev/null)}"
     # 127, as for a missing program: the plugin reads it as "not installed".
     valid "$version" || { echo "Claude is not installed" >&2; exit 127; }
+    if [ "${BUZZ_CLAUDE_VERSION:-}" = "2.1.305" ]; then
+      verify_protected "$version"
+    fi
     exec "$dir/$version/claude" "$@"
     # Builds that switched after the read above may have pruned its release;
     # then start the one `current` names now.
@@ -94,7 +118,7 @@ use)
   # one, which another build may be testing; remove the rest.
   for folder in "$dir"/*/; do
     folder=$(basename "$folder")
-    [ "$folder" = "$version" ] || [ "$folder" = "$previous" ] ||
+    [ "$folder" = "$version" ] || [ "$folder" = "$previous" ] || [ "$folder" = "2.1.305" ] ||
       newer "$folder" "$version" || rm -rf "${dir:?}/$folder"
   done
   ;;

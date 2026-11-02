@@ -1,6 +1,7 @@
 // The real claude.sh switching releases in a throwaway home, as Buzz builds
 // sharing one folder do.
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import {
   chmod,
@@ -8,6 +9,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -23,6 +25,73 @@ afterEach(async () => {
   await Promise.all(
     homes.splice(0).map((home) => rm(home, { recursive: true, force: true })),
   );
+});
+
+it("rejects executable cached bytes that do not match the trusted protected pin", async () => {
+  const { home, dir } = await disk(["2.1.305"]);
+  const binary = join(dir, "2.1.305", "claude");
+  const marker = join(home, "executed");
+  await writeFile(binary, `#!/bin/sh\ntouch '${marker}'\necho '2.1.305'\n`);
+  for (const command of ["runtime", "run"]) {
+    await expect(
+      run("bash", ["-c", script, "claude.sh", command], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          BUZZ_CLAUDE_VERSION: "2.1.305",
+        },
+      }),
+    ).rejects.toThrow("did not match its checksum");
+  }
+  await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("does not execute a checksum utility planted on PATH", async () => {
+  const { home } = await disk(["2.1.305"]);
+  const bin = join(home, "bin"),
+    marker = join(home, "checksum-executed");
+  await mkdir(bin);
+  await writeFile(
+    join(bin, "shasum"),
+    `#!/bin/sh\n/usr/bin/touch '${marker}'\nprintf planted\n`,
+  );
+  await chmod(join(bin, "shasum"), 0o755);
+  await expect(
+    run("/bin/bash", ["-p", "-c", script, "claude.sh", "run"], {
+      env: {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        HOME: home,
+        BUZZ_CLAUDE_VERSION: "2.1.305",
+      },
+    }),
+  ).rejects.toThrow("did not match its checksum");
+  await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("reverifies protected bytes at execution after a successful discovery", async () => {
+  const { home, dir } = await disk(["2.1.305"]);
+  const binary = join(dir, "2.1.305", "claude");
+  // Use fixture release bytes and their trusted pin while exercising the real shell.
+  const checksum = createHash("sha256")
+    .update(await readFile(binary))
+    .digest("hex");
+  const launcher = script.replace(/[a-f0-9]{64}/g, checksum);
+  const step = (command: string) =>
+    run("bash", ["-c", launcher, "claude.sh", command], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: home,
+        BUZZ_CLAUDE_VERSION: "2.1.305",
+      },
+    });
+  expect(JSON.parse((await step("runtime")).stdout)).toEqual({
+    version: "2.1.305",
+    root: await realpath(dir),
+  });
+  expect((await step("run")).stdout.trim()).toBe("2.1.305");
+  await writeFile(binary, "#!/bin/sh\necho '2.1.305 (altered)'\n");
+  await expect(step("run")).rejects.toThrow("did not match its checksum");
+  await expect(step("runtime")).rejects.toThrow("did not match its checksum");
 });
 
 /** Buzz's claude-code folder in a new home, holding fake `releases` with `current`. */

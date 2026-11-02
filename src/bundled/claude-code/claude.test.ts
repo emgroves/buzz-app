@@ -492,6 +492,33 @@ it("allows tool use and acknowledges hooks it is asked about", async () => {
   ]);
 });
 
+it("cancels a Buzz tool that is still running when its process stops", async () => {
+  const { spawn, processes } = fakeSpawn();
+  const signals: AbortSignal[] = [];
+  const tools = vi.fn(
+    (_conversation: unknown, _message: unknown, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<never>(() => {});
+    },
+  );
+  const claude = await ClaudeProcess.start(spawn, { ...launch, tools });
+  const fake = processes[0];
+  if (!fake) throw new Error("no process");
+  fake.emit({
+    type: "control_request",
+    request_id: "r1",
+    request: {
+      subtype: "mcp_message",
+      server_name: "buzz",
+      message: { jsonrpc: "2.0", id: 3, method: "tools/call" },
+    },
+  });
+  await vi.waitFor(() => expect(signals).toHaveLength(1));
+  expect(signals[0]?.aborted).toBe(false);
+  await claude.kill();
+  expect(signals[0]?.aborted).toBe(true);
+});
+
 it("serves the Buzz tools over the pipe and ends a turn on a final send or subthread reply", async () => {
   const { spawn, processes } = fakeSpawn();
   const tools = vi.fn(async (_conversation: unknown, message: unknown) => ({
@@ -552,7 +579,11 @@ it("serves the Buzz tools over the pipe and ends a turn on a final send or subth
   fake.emit(hook(true));
   fake.emit(hook(true, "reply_in_subthread"));
   await flush();
-  expect(tools).toHaveBeenCalledWith("chan/root", call);
+  expect(tools).toHaveBeenCalledWith(
+    "chan/root",
+    call,
+    expect.any(AbortSignal),
+  );
   const responses = fake.received
     .filter((message) => message.type === "control_response")
     .map((message) => message.response);

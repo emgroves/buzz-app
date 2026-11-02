@@ -75,6 +75,13 @@ jobs:
         with:
           key: agent-protection
           save-if: ${{ github.event_name == 'push' }}
+      - name: Install exact protected Claude fixture
+        run: ./bin/node scripts/install-protected-claude-test.mjs
+      - name: Native Claude protection boundary
+        env:
+          BUZZ_TEST_WORKERS: "2"
+          CLAUDE_PROTECTION_BIN: ${{ github.workspace }}/target/protected-claude-test/claude
+        run: ./bin/node scripts/ci-test-report.mjs kind=vitest report=test-results/protection/native-vitest.json evidence=test-results/protection/native-timing.json title="Native security hooks" -- ./bin/pnpm exec vitest run src/bundled/claude-code/protection.live.test.ts --reporter=default --reporter=json --outputFile=test-results/protection/native-vitest.json
       - name: Native approval-state containment
         run: |
           mkdir -p test-results/protection

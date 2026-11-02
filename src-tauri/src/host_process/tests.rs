@@ -314,6 +314,31 @@ fn a_bundled_program_runs_from_the_app_bin_never_path() {
 }
 
 #[test]
+fn only_the_protected_claude_cli_gets_the_hook_guard() {
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src/bundled/claude-code/manifest.json"
+    ))
+    .unwrap();
+    let declared: Vec<_> = manifest["host"]["processes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|process| process["id"].as_str().unwrap())
+        .collect();
+    for id in declared {
+        // `claude-protected-sh` is the only declared process that can run the
+        // CLI under protection; the protected file reader prints raw base64.
+        assert_eq!(
+            runs_protected_claude("buzz.claude-code", id, true),
+            id == "claude-protected-sh",
+            "{id}"
+        );
+        assert!(!runs_protected_claude("buzz.claude-code", id, false));
+        assert!(!runs_protected_claude("other.plugin", id, true));
+    }
+}
+
+#[test]
 fn protected_launch_refuses_path_programs_and_preserves_bundled_resolution() {
     let store = tempfile::tempdir().unwrap();
     let mut process: HostProcess =
