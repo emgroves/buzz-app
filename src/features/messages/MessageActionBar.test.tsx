@@ -22,6 +22,7 @@ import { useKeyboardFocusVisibility } from "../../shared/design-system/useKeyboa
 const render = (ui: ReactElement) => rtlRender(ui, { wrapper: ToastProvider });
 import { MessageActionBar } from "./MessageActionBar";
 import { MenuItem } from "../../shared/design-system/ui/Menu";
+import { PreviewCard } from "../../shared/design-system/ui/PreviewCard";
 import { createPortal } from "react-dom";
 import { MessageLink } from "../conversation/MessageLink";
 import { LinkThreadTabContext } from "../conversation/LinkLabelContext";
@@ -197,6 +198,55 @@ it("reveals actions only over message content or the toolbar, not the row's empt
     expect(row.hasAttribute("data-actions-revealed")).toBe(false);
   }
   fireEvent.pointerOver(screen.getByText("Message author"));
+  expect(row.hasAttribute("data-actions-revealed")).toBe(false);
+});
+
+it("keeps actions under the row's own open preview card until it closes", async () => {
+  pointerMedia();
+  function PreviewRow({ open }: { open: boolean }) {
+    const rowRef = useRef<HTMLDivElement>(null);
+    return (
+      <div ref={rowRef} data-testid="message">
+        <div data-message-action-anchor>
+          <PreviewCard
+            open={open}
+            trigger={<a href="#linked">Linked message</a>}
+            link={<a href="#linked" />}
+            aria-label="Message preview"
+          >
+            Preview body
+          </PreviewCard>
+        </div>
+        <MessageActionBar rowRef={rowRef} copyText={() => "Linked message"} />
+      </div>
+    );
+  }
+  const view = render(<PreviewRow open />);
+  const row = screen.getByTestId("message");
+  const link = screen.getByRole("link", { name: "Linked message" });
+  const card = screen.getByText("Preview body");
+  fireEvent.pointerEnter(row);
+  fireEvent.pointerOver(link);
+  expect(row.hasAttribute("data-actions-revealed")).toBe(true);
+  // A card growing over its trigger under a still pointer leaves for a frame.
+  fireEvent.pointerOut(link, { relatedTarget: card });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(true);
+  fireEvent.pointerOver(link, { relatedTarget: card });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(true);
+  // Back on the row's empty space, the card no longer holds the actions.
+  fireEvent.pointerOut(link, { relatedTarget: card });
+  fireEvent.pointerOver(row, { relatedTarget: card });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(false);
+  fireEvent.pointerOver(link, { relatedTarget: row });
+  fireEvent.pointerOut(link, { relatedTarget: card });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(true);
+  // The row never hears the pointer leave the portaled card; its close ends it.
+  await act(async () => view.rerender(<PreviewRow open={false} />));
+  expect(row.hasAttribute("data-actions-revealed")).toBe(false);
+  // A closing card is no longer the row's: entering it leaves the row.
+  fireEvent.pointerOver(link, { relatedTarget: row });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(true);
+  fireEvent.pointerOut(link, { relatedTarget: card });
   expect(row.hasAttribute("data-actions-revealed")).toBe(false);
 });
 

@@ -11,6 +11,7 @@ import {
   behindActiveOverlay,
   observeOverlays,
 } from "../../shared/design-system/overlayLayer";
+import { previewCardTrigger } from "../../shared/design-system/ui/PreviewCard";
 
 const contentSelector =
   "[data-message-action-anchor], [data-message-attachments] > *";
@@ -180,11 +181,23 @@ export function useFloatingActionBar(
       if (!next) row.removeAttribute("data-actions-revealed");
       setRevealed(next);
     };
+    // The trigger of this row's open preview card while the pointer is on the
+    // card. Entering the card, or the card growing over its trigger beneath a
+    // still pointer, isn't leaving the row: hiding here would re-show the
+    // toolbar above the card. The row never hears the pointer leave a portaled
+    // card, so the trigger's closing state ends that hover.
+    let preview: Element | null = null;
+    const previewing = () =>
+      !!preview?.hasAttribute("data-popup-open") && row.contains(preview);
     const over = (event: PointerEvent) => {
+      preview = null;
       hovered = hoverTarget(event.target, event);
       update();
     };
     const out = (event: PointerEvent) => {
+      preview = previewCardTrigger(event.relatedTarget);
+      if (previewing()) return;
+      preview = null;
       hovered = hoverTarget(event.relatedTarget, event);
       update();
     };
@@ -209,6 +222,10 @@ export function useFloatingActionBar(
     row.addEventListener("focusin", focusIn);
     row.addEventListener("focusout", focusOut);
     const observer = new MutationObserver(() => {
+      if (preview && !previewing()) {
+        preview = null;
+        hovered = false;
+      }
       // Recheck focus if a control is removed without dispatching focusout.
       update();
     });
@@ -216,7 +233,7 @@ export function useFloatingActionBar(
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["aria-expanded"],
+      attributeFilter: ["aria-expanded", "data-popup-open"],
     });
     update();
     return () => {
@@ -476,6 +493,9 @@ export function useFloatingActionBar(
       siblings.disconnect();
       unobserveOverlays();
       hide();
+      // An overlay or positioning update can restore this attribute between a
+      // hover update removing it and React committing the hidden bar.
+      row.removeAttribute("data-actions-revealed");
     };
   }, [floating, revealed, rowRef, barRef, slotRef]);
 
