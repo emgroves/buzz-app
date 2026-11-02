@@ -648,6 +648,40 @@ it("repairs retained thread pages through the real channel-established catch-up 
   ]);
 });
 
+it("repairs a ready thread on stream establishment without notifying when nothing changed, then runs an older page requested meanwhile", async () => {
+  const h = seeded();
+  const first = h.view.refresh();
+  h.next().respond([root, reply("old", 10)]);
+  await first;
+  const ready = h.view.snapshot();
+  const statuses: string[] = [];
+  const stop = h.view.subscribe(() => statuses.push(h.view.snapshot().status));
+
+  h.traffic.established("a");
+  const repair = h.next();
+  expect(h.view.snapshot()).toBe(ready);
+  const more = h.view.loadMore();
+  expect(h.pending).toHaveLength(0);
+  repair.respond([root, reply("old", 10)]);
+  await flush();
+  // The unchanged repair published nothing; only the queued page shows loading.
+  expect(statuses).toEqual(["loading"]);
+  expect(h.view.snapshot()).toMatchObject({ readKind: "older" });
+  expect(h.view.snapshot().replies).toBe(ready.replies);
+
+  const page = h.next();
+  expect(page.filters[1]?.thread_cursor).toBe(10);
+  page.respond([root, reply("later", 20)]);
+  await more;
+  await flush();
+  expect(h.view.snapshot().replies.map((row) => row.content)).toEqual([
+    "old",
+    "later",
+  ]);
+  expect(statuses.at(-1)).toBe("ready");
+  stop();
+});
+
 it("offers retry on failures and rejects a non-advancing cursor without erasing readable rows", async () => {
   const h = seeded();
   const first = h.view.refresh();

@@ -167,6 +167,8 @@ export function createThreadView({
   let controller: AbortController | undefined;
   /** A refresh requested while a read runs; the stream's return carries over. */
   let again: false | "refresh" | "established" = false;
+  /** An older page requested during a background repair, which stays ready. */
+  let older = false;
   let snapshot: ThreadSnapshot = Object.freeze({
     status: "idle",
     root: undefined,
@@ -222,12 +224,16 @@ export function createThreadView({
       ...new Map(batches.flat().map((event) => [event.id, event])).values(),
     ];
   }
-  function notifyListeners() {
+  /** A fold that changed nothing keeps the snapshot and notifies no one. */
+  function emit(next: ThreadSnapshot) {
+    const keys = Object.keys(next) as (keyof ThreadSnapshot)[];
+    if (keys.every((key) => next[key] === snapshot[key])) return;
+    snapshot = Object.freeze(next);
     for (const listener of listeners) notify(listener);
   }
   function publishStatus(patch: Partial<ThreadSnapshot>) {
     if (disposed) return;
-    snapshot = Object.freeze({
+    emit({
       ...snapshot,
       ...patch,
       ...(exact
@@ -237,7 +243,6 @@ export function createThreadView({
           }
         : {}),
     });
-    notifyListeners();
   }
   /** This thread's local operations; others never reach its fold. */
   function localOperations() {
@@ -309,7 +314,7 @@ export function createThreadView({
       snapshot.replies.every((row, index) => row === nextReplies[index])
         ? snapshot.replies
         : Object.freeze(nextReplies);
-    snapshot = Object.freeze({
+    emit({
       ...snapshot,
       ...patch,
       root: !rootUnavailable
@@ -318,7 +323,6 @@ export function createThreadView({
       replies,
       ...(exact ? { target, targetStatus } : {}),
     });
-    notifyListeners();
   }
   function retain(events: readonly RelayEvent[], commit = true) {
     if (events.length > MAX_EVENTS || listByteSize(events) > MAX_BYTES) {
@@ -332,6 +336,7 @@ export function createThreadView({
       cursor = undefined;
       pages = 0;
       again = false;
+      older = false;
       if (exact) targetStatus = "error";
       publish({
         status: "error",
@@ -365,6 +370,7 @@ export function createThreadView({
     selectionStaged = [];
     controller = undefined;
     again = false;
+    older = false;
     staged = [];
     if (exact) targetStatus = "loading";
     if (clear || !canAccess()) {
@@ -531,6 +537,7 @@ export function createThreadView({
     if (controller) {
       if (established) again = "established";
       else if (replace) again ||= "refresh";
+      else older = true;
       return;
     }
     if (!canAccess()) {
@@ -552,11 +559,14 @@ export function createThreadView({
     // Repair retains already-verified presentation; only a new/unavailable
     // selection waits for its initial fold. Never unmount a reader on reconnect.
     if (exact && replace && targetStatus !== "ready") targetStatus = "loading";
-    publishStatus({
-      status: "loading",
-      error: undefined,
-      readKind: replace ? "refresh" : "older",
-    });
+    // A stream establishment (a reconnect, or a minute renewal) repairs a ready
+    // view in the background: it stays ready unless the repair changes it.
+    if (!established || snapshot.status !== "ready")
+      publishStatus({
+        status: "loading",
+        error: undefined,
+        readKind: replace ? "refresh" : "older",
+      });
     try {
       if (exact && replace) {
         const revision = selectionRevision;
@@ -803,6 +813,9 @@ export function createThreadView({
           const established = again === "established";
           again = false;
           void run(true, established);
+        } else if (older && !disposed) {
+          older = false;
+          void run(false);
         }
       }
     }

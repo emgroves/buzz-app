@@ -589,19 +589,20 @@ it("refresh after establishment drops a retained reply it cannot reach within th
   await h.view.refresh();
   reconnected = true;
   h.traffic.established(channel);
-  await vi.waitFor(() =>
+  // Ten pages never reached `old`: it goes rather than sitting below a gap.
+  // The pages read stay, but the reader had one page, so the range settles
+  // on one: a later refresh re-reads one page, not ten, and older pages
+  // continue from its bound. The repair stays ready throughout, so wait on
+  // its rows.
+  const shown = fresh.map((row) => row.id).reverse();
+  await vi.waitFor(() => {
+    expect(h.view.snapshot().replies.map((row) => row.id)).toEqual(shown);
     expect(h.view.snapshot()).toMatchObject({
       status: "ready",
       limited: false,
       canLoadMore: true,
-    }),
-  );
-  // Ten pages never reached `old`: it goes rather than sitting below a gap.
-  // The pages read stay, but the reader had one page, so the range settles
-  // on one: a later refresh re-reads one page, not ten, and older pages
-  // continue from its bound.
-  const shown = fresh.map((row) => row.id).reverse();
-  expect(h.view.snapshot().replies.map((row) => row.id)).toEqual(shown);
+    });
+  });
   let before = h.requests.length;
   await h.view.refresh();
   expect(h.requests.slice(before)).toMatchObject([
