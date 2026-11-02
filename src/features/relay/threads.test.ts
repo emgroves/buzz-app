@@ -682,6 +682,22 @@ it("repairs a ready thread on stream establishment without notifying when nothin
   stop();
 });
 
+it("keeps a failed establishment repair visible and drops the older page requested meanwhile", async () => {
+  const h = seeded();
+  const first = h.view.refresh();
+  h.next().respond([root, reply("old", 10)]);
+  await first;
+
+  h.traffic.established("a");
+  const repair = h.next();
+  void h.view.loadMore();
+  repair.fail(new Error("offline"));
+  await flush();
+  expect(h.pending).toHaveLength(0);
+  expect(h.view.snapshot()).toMatchObject({ status: "error" });
+  expect(h.view.snapshot().error).toContain("offline");
+});
+
 it("offers retry on failures and rejects a non-advancing cursor without erasing readable rows", async () => {
   const h = seeded();
   const first = h.view.refresh();

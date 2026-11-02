@@ -802,6 +802,9 @@ export function createThreadView({
       });
     } catch (error) {
       if (active()) {
+        // A failed repair stays visible with Retry; the page queued behind it
+        // would clear that error.
+        older = false;
         if (targetStatus === "loading") targetStatus = "error";
         publishStatus({ status: "error", error: String(error) });
       }
