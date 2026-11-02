@@ -25,7 +25,10 @@ Policy changes and newly committed identities after opt-in allocate from that
 clock. Joins copy the identity's generation; defaults-only writes, deletion and
 forgetting the final identity preserve the clock. Re-importing the same public
 key cannot revive an earlier generation. Protected durable runtime state uses a
-new namespace, so an older preview's ambiguous history is not resumed.
+new namespace, so an older preview's ambiguous history is not resumed. Codex records the
+protection `stateKey` with each saved thread and resumes it only under the same
+key, so a policy change, or moving between unprotected and protected, starts a
+new thread.
 
 An earlier protection preview could save a version-2 identity envelope that
 omitted memberships still present in its sidecar. Buzz refuses that incomplete

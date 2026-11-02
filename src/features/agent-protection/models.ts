@@ -9,7 +9,8 @@ export type ReviewModelChoice = Readonly<{
   label: string;
 }>;
 import type { HostProcess, HostProcessOptions } from "../host/service";
-/** Launches only a review worker declared by the protecting plugin. */
+/** Launches only a review worker declared by the protecting plugin. It lasts
+ * as long as that plugin's protection, which kills what it launched. */
 export type ProtectedSpawn = (
   options: Omit<HostProcessOptions, "protection">,
 ) => Promise<HostProcess>;
@@ -19,7 +20,9 @@ export type ReviewPrompt = Readonly<{
   input: string;
   outputSchema?: Readonly<Record<string, unknown>>;
 }>;
-/** Runtime-owned inference uses its configured credentials, with no tools. */
+/** Runtime-owned inference uses its configured credentials, with no tools.
+ * `signal` cancels one completion; `spawn` is the same for each one while
+ * its protection lasts, so a runtime may keep one worker for them all. */
 export type ReviewModelProvider = Readonly<{
   label: string;
   models(): Promise<readonly ReviewModelChoice[]>;

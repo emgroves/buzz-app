@@ -6,6 +6,22 @@ import type {
 import script from "./codex.sh?raw";
 import type { Wire } from "./rpc";
 import { checkCodex, CodexSetup, withScript } from "./setup";
+import manifest from "./manifest.json";
+
+it("declares protected file reads through the bundled helper with a positional path", () => {
+  expect(
+    manifest.host.processes.find((process) => process.id === "read-protected"),
+  ).toEqual({
+    id: "read-protected",
+    program: "buzz-agent-command",
+    bundled: true,
+    args: [
+      "--shell",
+      `case "$1" in "~/"*) set -- "$HOME/\${1:2}";; esac; exec /usr/bin/base64 -i "$1"`,
+      "buzz-read",
+    ],
+  });
+});
 
 type Result = { stdout?: string; stderr?: string; code: number | null };
 

@@ -2,7 +2,7 @@ import { Context } from "@deepseek-ai/cordis";
 import { afterEach, expect, it, vi } from "vitest";
 import { AgentProtectionService, type ProtectionRequest } from "./service";
 import type { Agent } from "../agents/service";
-import type { ReviewModelProvider } from "./models";
+import type { ProtectedSpawn, ReviewModelProvider } from "./models";
 import {
   HostService,
   type Host,
@@ -132,10 +132,10 @@ it("kills a supplied runtime whose launch completes after its provider was revok
   expect(p.process.kill).toHaveBeenCalledOnce();
 });
 
-it("uses only the calling protection plugin's review runtime and stops it on cancellation", async () => {
+it("uses only the calling protection plugin's review runtime and keeps it until the provider goes", async () => {
   const f = await fixture();
   const p = processFixture(f.ctx);
-  f.plugin.agentProtection.register({
+  const lease = f.plugin.agentProtection.register({
     processProtection,
     runtimeProcesses: { "buzz.claude-code": "own-engine" },
     check: async () => true,
@@ -154,19 +154,28 @@ it("uses only the calling protection plugin's review runtime and stops it on can
       models: async () => [],
       complete: async (model, _prompt, _signal, spawn) => {
         if (!spawn) throw new Error("No protected reviewer runtime");
-        await spawn({});
+        spawns.push(spawn);
+        if (spawns.length === 1) await spawn({});
         return { text: "model reply", model };
       },
     });
-  const stopped = new AbortController();
-  await f.plugin.agentProtection.complete(
-    { runtime: "buzz.claude-code", id: "custom" },
-    { system: "Plugin prompt", input: "Evidence" },
-    stopped.signal,
-  );
+  const spawns: ProtectedSpawn[] = [];
+  const review = async () => {
+    const stopped = new AbortController();
+    await f.plugin.agentProtection.complete(
+      { runtime: "buzz.claude-code", id: "custom" },
+      { system: "Plugin prompt", input: "Evidence" },
+      stopped.signal,
+    );
+    stopped.abort();
+  };
+  await review();
+  await review();
   expect(p.owners).toEqual(["security.test"]);
   expect(p.launch.mock.calls[0]?.[0]).toBe("own-engine");
-  stopped.abort();
+  expect(spawns[1]).toBe(spawns[0]);
+  expect(p.process.kill).not.toHaveBeenCalled();
+  lease.dispose();
   expect(p.process.kill).toHaveBeenCalledOnce();
 });
 

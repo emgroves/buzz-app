@@ -7,7 +7,12 @@ import { pubkeyOf } from "../../features/agents/membership";
 import { ownerReads } from "../../features/agents/reads";
 import { localStore } from "../../features/agents/state";
 import { RESUMED_PROMPT } from "../../buzz-mcp/prompt";
-import type { Agent, Delivery } from "../../features/agents/service";
+import type {
+  Agent,
+  AgentHandle,
+  Delivery,
+} from "../../features/agents/service";
+import type { AgentProtection } from "../../features/agent-protection/service";
 import type { RelayData } from "../../features/relay/service";
 import type { EventData } from "../../features/relay/events";
 import { eventDto } from "../../features/relay/events";
@@ -59,12 +64,17 @@ function fixture(
   } = {},
   repositories?: (scope: string | undefined) => string,
   hooks?: ConstructorParameters<typeof CodexRuntime>[7],
+  security?: {
+    host: ConstructorParameters<typeof CodexRuntime>[8];
+    handle: ConstructorParameters<typeof CodexRuntime>[9];
+  },
 ) {
   let terminals = remainingTerminals;
   let options: HostProcessOptions | undefined;
   let thread = 0;
   let turn = 0;
   const sent: Wire[] = [];
+  const modelIds: [string, string] = ["test-model", "deep-model"];
   /** Methods the server answers with a JSON-RPC error instead of a result. */
   const failing = new Set<string>();
   /** Methods the server answers only once their promise settles. */
@@ -107,11 +117,13 @@ function fixture(
       }
       const params = request.params as Record<string, unknown>;
       let result: unknown = {};
+      if (request.method === "initialize")
+        result = { userAgent: "fixture buzz-protection-v2" };
       if (request.method === "model/list")
         result = {
           data: [
             {
-              model: "test-model",
+              model: modelIds[0],
               displayName: "Test Model",
               isDefault: true,
               defaultReasoningEffort: "medium",
@@ -120,7 +132,7 @@ function fixture(
               ),
             },
             {
-              model: "deep-model",
+              model: modelIds[1],
               displayName: "",
               isDefault: false,
               defaultReasoningEffort: "high",
@@ -228,7 +240,7 @@ function fixture(
       value?.onStdout?.("/home/test/.buzz\n");
       return { ...process, exited: Promise.resolve(0) };
     }
-    if (_id === "read") {
+    if (_id === "read" || _id === "read-protected") {
       fileReads.push({
         ...(value?.cwd ? { cwd: value.cwd } : {}),
         path: value?.args?.[0] ?? "",
@@ -339,6 +351,8 @@ function fixture(
     () => added,
     repositories,
     hooks,
+    security?.host,
+    security?.handle,
   );
   runtimes.push(runtime);
   const events: EventData[] = [];
@@ -457,6 +471,7 @@ function fixture(
     vi.stubGlobal("localStorage", local);
     vi.stubGlobal("navigator", { platform: "MacIntel" });
     apply({
+      agentProtection: { registerModels: vi.fn() },
       host: { spawn },
       agents: {
         snapshot: () => ({ status: "ready", agents: [], running }),
@@ -589,6 +604,7 @@ function fixture(
     adopted,
     process,
     sent,
+    modelIds,
     failing,
     held,
     emit,
@@ -1068,6 +1084,398 @@ it("shares model discovery with active turns and another agent", async () => {
   f.complete();
   await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(1));
 });
+
+function protectedPreview() {
+  const engine = () => {
+    const next = fixture();
+    next.modelIds.splice(0, 2, "protected-model", "protected-deep");
+    return next;
+  };
+  let worker = engine();
+  let handle: AgentHandle | undefined;
+  const assertAvailable = vi.fn(() => {});
+  const protection = (key: string): AgentProtection => ({
+    key,
+    stateKey: key,
+    assertAvailable,
+    check: async () => {},
+    processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+    spawn: (options) => worker.spawn("app-server", options),
+  });
+  const f = fixture([], undefined, false, {}, undefined, undefined, {
+    host: {
+      serveMcp: async () => {
+        const closed = deferred<void>();
+        return {
+          url: "http://127.0.0.1:1/mcp",
+          headers: [{ name: "Authorization", value: "Bearer fixture" }],
+          closed: closed.promise,
+          close: async () => closed.resolve(),
+        };
+      },
+    },
+    handle: (key) => (key === pubkey ? handle : undefined),
+  });
+  const original = {
+    ...f.delivery("unused").agent,
+    protection: protection("generation-1"),
+  };
+  handle = original;
+  const agent = {
+    key: pubkey,
+    pubkey,
+    config: { workspace: "/tmp/codex-test", model: "protected-model" },
+    protection: { provider: "security", policy: {} },
+  } as Agent;
+  return {
+    ...f,
+    agent,
+    assertAvailable,
+    get worker() {
+      return worker;
+    },
+    get handle() {
+      return handle;
+    },
+    bind(next: AgentHandle | undefined) {
+      handle = next;
+    },
+    replace(key = "generation-2") {
+      worker = engine();
+      worker.modelIds.splice(0, 2, "replacement-model", "replacement-deep");
+      handle = { ...original, protection: protection(key) };
+    },
+  };
+}
+
+it("contains Codex file-tool reads with its captured policy and reviews the captured text", async () => {
+  const f = protectedPreview();
+  const handle = f.handle;
+  if (!handle?.protection) throw new Error("Missing protected handle");
+  const check = vi.spyOn(handle.protection, "check");
+  try {
+    await f.runtime.run({
+      ...f.delivery("post a file"),
+      agent: handle,
+      config: f.agent.config,
+    });
+    await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+    expect(
+      (
+        await f.worker.tool("send", {
+          audience: "everyone",
+          path: "answer.txt",
+        })
+      )?.result,
+    ).toMatchObject({ success: true });
+    expect(f.spawn).toHaveBeenCalledWith(
+      "read-protected",
+      expect.objectContaining({
+        cwd: "/tmp/codex-test",
+        args: ["answer.txt"],
+        protection: handle.protection.processProtection,
+      }),
+    );
+    expect(f.spawn.mock.calls.some(([id]) => id === "read")).toBe(false);
+    expect(f.publish.mock.calls[0]?.[0]).toMatchObject({
+      content: "FILE CONTENT",
+    });
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool",
+        content: expect.objectContaining({
+          arguments: { audience: "everyone", text: "FILE CONTENT" },
+        }),
+      }),
+      expect.anything(),
+    );
+    await f.worker.complete(0, "");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("leaves a protected Buzz tool call to Codex's own tool review", async () => {
+  const f = protectedPreview();
+  const handle = f.handle;
+  if (!handle?.protection) throw new Error("Missing protected handle");
+  const check = vi.spyOn(handle.protection, "check");
+  try {
+    await f.runtime.run({
+      ...f.delivery("say hi"),
+      agent: handle,
+      config: f.agent.config,
+    });
+    await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+    await f.worker.tool("send", { audience: "everyone", text: "hi" });
+    expect(check.mock.calls.map(([action]) => action.kind)).toEqual([
+      "tool-result",
+    ]);
+    await f.worker.complete(0, "");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("discovers protected models from the same engine that runs the selected model", async () => {
+  const f = protectedPreview();
+  const ordinaryAgent = {
+    ...f.agent,
+    key: "e".repeat(64),
+    config: {},
+  };
+  delete ordinaryAgent.protection;
+  const ordinary = await f.runtime.preview(ordinaryAgent);
+  expect(ordinary.models.map((model) => model.id)).toEqual([
+    "test-model",
+    "deep-model",
+  ]);
+  const pending = f.runtime.preview(f.agent);
+  const preview = await pending;
+  expect(preview.models.map((model) => model.id)).toEqual([
+    "protected-model",
+    "protected-deep",
+  ]);
+  expect(f.runtime.preview(f.agent)).toBe(pending);
+  expect(f.spawn).toHaveBeenCalledTimes(1);
+  expect(f.worker.spawn).toHaveBeenCalledTimes(1);
+  if (!f.handle) throw new Error("Missing protected handle");
+  const picked = preview.models[1];
+  if (!picked) throw new Error("Missing protected model choice");
+  const delivery = {
+    ...f.delivery("use the selected protected model"),
+    agent: f.handle,
+    config: f.agent.config,
+    model: picked.id,
+  };
+  await f.runtime.run(delivery);
+  await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+  expect(f.worker.starts()[0]?.params).toMatchObject({
+    model: "protected-deep",
+  });
+  expect(f.starts()).toEqual([]);
+  await f.worker.complete(0, "");
+});
+
+it("refuses missing or revoked protection before returning a cached model preview", async () => {
+  const f = protectedPreview();
+  const handle = f.handle;
+  f.bind(undefined);
+  expect(() => f.runtime.preview(f.agent)).toThrow(
+    "The protected agent has no live policy binding",
+  );
+  expect(f.spawn).not.toHaveBeenCalled();
+  expect(f.worker.spawn).not.toHaveBeenCalled();
+  f.bind(handle);
+  await f.runtime.preview(f.agent);
+  f.bind(undefined);
+  expect(() => f.runtime.preview(f.agent)).toThrow(
+    "The protected agent has no live policy binding",
+  );
+  f.bind(handle);
+  f.assertAvailable.mockImplementation(() => {
+    throw new Error("protection revoked");
+  });
+  expect(() => f.runtime.preview(f.agent)).toThrow("protection revoked");
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("reports a protection startup failure and settles the waiting activity", async () => {
+  const f = protectedPreview();
+  await f.runtime.preview(f.agent);
+  f.assertAvailable.mockImplementation(() => {
+    throw new Error("protection revoked");
+  });
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  if (!f.handle) throw new Error("Missing protected handle");
+  await f.runtime.run({
+    ...f.delivery("reply safely"),
+    agent: f.handle,
+    config: f.agent.config,
+  });
+  await vi.waitFor(() =>
+    expect(f.runtime.sessions(pubkey)).toMatchObject([
+      {
+        status: "Needs attention",
+        detail: expect.stringContaining("protection revoked"),
+      },
+    ]),
+  );
+  await expect(f.workingUntil.mock.calls[0]?.[0]).resolves.toEqual({
+    ok: false,
+    error: "protection revoked",
+  });
+  expect(f.publish).toHaveBeenCalledOnce();
+  expect(f.publish.mock.calls[0]?.[0]).toMatchObject({
+    content: expect.stringContaining("protection revoked"),
+  });
+  expect(f.worker.starts()).toEqual([]);
+});
+
+it("invalidates model previews on retirement even when the protection key is unchanged", async () => {
+  const f = protectedPreview();
+  const first = f.runtime.preview(f.agent);
+  await first;
+  const previous = f.worker;
+  await f.runtime.retire(pubkey);
+  expect(previous.process.end).toHaveBeenCalledOnce();
+  f.replace("generation-1");
+  const next = f.runtime.preview(f.agent);
+  expect(next).not.toBe(first);
+  expect((await next).models.map((model) => model.id)).toEqual([
+    "protected-model",
+    "replacement-model",
+    "replacement-deep",
+  ]);
+  expect(f.worker.spawn).toHaveBeenCalledOnce();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("refreshes a cached preview when a replacement provider has another protection key", async () => {
+  const f = protectedPreview();
+  const first = f.runtime.preview(f.agent);
+  await first;
+  await f.worker.process.end();
+  f.replace();
+  const next = f.runtime.preview(f.agent);
+  expect(next).not.toBe(first);
+  expect((await next).models.map((model) => model.id)).toContain(
+    "replacement-deep",
+  );
+  expect(f.worker.spawn).toHaveBeenCalledOnce();
+  expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("starts a replacement provider's worker once the previous one has exited", async () => {
+  const f = protectedPreview();
+  await f.runtime.preview(f.agent);
+  const previous = f.worker;
+  f.replace();
+  const next = await f.runtime.preview(f.agent);
+  expect(next.models.map((model) => model.id)).toContain("replacement-deep");
+  expect(previous.process.end).toHaveBeenCalledOnce();
+  expect(f.worker.spawn).toHaveBeenCalledOnce();
+});
+
+it("retries a protected retirement that failed", async () => {
+  const f = protectedPreview();
+  await f.runtime.preview(f.agent);
+  f.worker.process.end.mockRejectedValueOnce(new Error("stuck"));
+  f.worker.process.kill.mockRejectedValueOnce(new Error("stuck"));
+  await expect(f.runtime.retire(pubkey)).rejects.toThrow("stuck");
+  await f.runtime.retire(pubkey);
+  f.replace("generation-1");
+  await expect(f.runtime.preview(f.agent)).resolves.toBeDefined();
+});
+
+describe("saved threads and protection state", () => {
+  type Protected = ReturnType<typeof protectedPreview>;
+  const ask = async (
+    f: Protected,
+    protect: boolean,
+    text: string,
+    named?: (title: string) => void,
+  ) => {
+    if (!f.handle) throw new Error("Missing handle");
+    const agent = protect ? f.handle : { ...f.handle, protection: undefined };
+    const target = protect ? f.worker : f;
+    const before = target.starts().length;
+    const sent = target.sent.length;
+    const published = f.publish.mock.calls.length;
+    await f.runtime.run({
+      ...f.delivery(text),
+      agent,
+      config: { workspace: "/tmp/codex-test" },
+      ...(named ? { named } : {}),
+    });
+    await vi.waitFor(() => expect(target.starts()).toHaveLength(before + 1));
+    const methods = target.sent.slice(sent).map((wire) => wire.method);
+    await target.complete(before, "ok");
+    await vi.waitFor(() =>
+      expect(f.publish).toHaveBeenCalledTimes(published + 1),
+    );
+    return methods;
+  };
+  const resumed = (methods: (string | undefined)[]) =>
+    methods.includes("thread/resume");
+
+  it("starts a new thread under a replacement protection state", async () => {
+    const f = protectedPreview();
+    try {
+      expect(resumed(await ask(f, true, "one"))).toBe(false);
+      expect(resumed(await ask(f, true, "two"))).toBe(true);
+      await f.runtime.retire(pubkey);
+      f.replace("generation-2");
+      expect(resumed(await ask(f, true, "three"))).toBe(false);
+      expect(resumed(await ask(f, true, "four"))).toBe(true);
+      await f.runtime.retire(pubkey);
+      f.replace("generation-1");
+      expect(resumed(await ask(f, true, "five"))).toBe(false);
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+
+  it("never resumes an unprotected thread under protection or the reverse", async () => {
+    const f = protectedPreview();
+    try {
+      expect(resumed(await ask(f, false, "open"))).toBe(false);
+      expect(resumed(await ask(f, false, "again"))).toBe(true);
+      await f.runtime.retire(pubkey);
+      expect(resumed(await ask(f, true, "guarded"))).toBe(false);
+      await f.runtime.retire(pubkey);
+      f.replace("generation-1");
+      expect(resumed(await ask(f, true, "guarded again"))).toBe(true);
+      await f.runtime.retire(pubkey);
+      expect(resumed(await ask(f, false, "open again"))).toBe(false);
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+
+  it("does not title a Solo chat again when its protection state changes", async () => {
+    const f = protectedPreview();
+    asSoloChat(f);
+    const named = vi.fn();
+    try {
+      await ask(f, true, "guarded", named);
+      await f.runtime.retire(pubkey);
+      expect(resumed(await ask(f, false, "open", named))).toBe(false);
+      expect(
+        f.sent.filter(
+          (wire) =>
+            wire.method === "thread/start" &&
+            (wire.params as { ephemeral?: boolean }).ephemeral,
+        ),
+      ).toEqual([]);
+      expect(named).not.toHaveBeenCalled();
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+
+  it("refuses to compact a thread saved under another protection state", async () => {
+    const f = protectedPreview();
+    try {
+      await ask(f, true, "one");
+      await f.runtime.retire(pubkey);
+      f.replace("generation-2");
+      await expect(
+        f.runtime.session(f.agent, { channelId: "channel", root }, "compact"),
+      ).rejects.toThrow("There is no session here to compact yet.");
+    } finally {
+      f.runtime.dispose();
+    }
+  });
+});
+
+it("stops a protected worker that served only a preview once its agent goes", async () => {
+  const f = protectedPreview();
+  await f.runtime.preview(f.agent);
+  f.runtime.sync([]);
+  await vi.waitFor(() => expect(f.worker.process.end).toHaveBeenCalledOnce());
+});
+
 it("ignores changes to local Codex model preferences in the composer", async () => {
   const configured = { model: "deep-model" };
   const f = fixture([], undefined, false, configured);
@@ -2904,6 +3312,109 @@ it("returns a failed send to Codex for correction without ending its turn", asyn
   expect(f.publish).toHaveBeenCalledTimes(2);
 });
 
+it.each([
+  ["send", {}],
+  ["reply_in_subthread", { parent: root }],
+])(
+  "reports an uncorrected final %s failure when Codex completes",
+  async (name, extra) => {
+    const f = fixture();
+    await f.runtime.run(f.delivery("work"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    f.publish.mockRejectedValueOnce(new Error("Signing rejected"));
+    expect(
+      (
+        await f.tool(name, {
+          ...extra,
+          audience: "everyone",
+          text: "answer",
+          final: true,
+        })
+      )?.result,
+    ).toMatchObject({ success: false });
+    await f.complete(0, "");
+    await expect(f.workingUntil.mock.calls[0]?.[0]).resolves.toMatchObject({
+      ok: false,
+      error: "Signing rejected",
+    });
+    await vi.waitFor(() =>
+      expect(f.runtime.sessions(pubkey)[0]?.status).toBe("Needs attention"),
+    );
+    expect(f.publish.mock.calls[1]?.[0]).toMatchObject({
+      content: "Codex could not finish: Signing rejected.",
+    });
+  },
+);
+
+it.each([false, true])(
+  "keeps steered request delivery independent of an older send failing: %s",
+  async (olderFails) => {
+    const f = fixture();
+    await f.runtime.run(f.delivery("first"));
+    await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
+    const held = deferred<void>();
+    const publishing = deferred<void>();
+    f.publish.mockImplementationOnce(async (event) => {
+      publishing.resolve();
+      await held.promise;
+      if (olderFails) throw new Error("old delivery denied");
+      return { ...(event as object), id: "d".repeat(64) };
+    });
+    const started = f.starts()[0];
+    if (!started) throw new Error("Expected started turn");
+    f.emit({
+      id: "held-delivery",
+      method: "item/tool/call",
+      params: {
+        threadId: (started.params as { threadId: string }).threadId,
+        turnId: "turn-1",
+        callId: "held-delivery",
+        namespace: "buzz",
+        tool: "send",
+        arguments: { audience: "everyone", text: "first answer", final: true },
+      },
+    });
+    try {
+      await publishing.promise;
+      const acknowledged = vi.fn();
+      await f.runtime.run({
+        ...f.delivery("new request"),
+        step: vi.fn(),
+        acknowledged,
+      });
+      await vi.waitFor(() => expect(acknowledged).toHaveBeenCalledOnce());
+      if (!olderFails)
+        f.publish.mockRejectedValueOnce(new Error("new delivery denied"));
+      expect(
+        (
+          await f.tool("send", {
+            audience: "everyone",
+            text: "new answer",
+            final: true,
+          })
+        )?.result,
+      ).toMatchObject({ success: olderFails });
+    } finally {
+      held.resolve();
+    }
+    await vi.waitFor(() =>
+      expect(
+        f.sent.find((wire) => wire.id === "held-delivery" && !wire.method)
+          ?.result,
+      ).toMatchObject({ success: !olderFails }),
+    );
+    await f.complete(0, "");
+    await expect(f.workingUntil.mock.calls[1]?.[0]).resolves.toEqual(
+      olderFails ? { ok: true } : { ok: false, error: "new delivery denied" },
+    );
+    await vi.waitFor(() =>
+      expect(f.runtime.sessions(pubkey)[0]?.status).toBe(
+        olderFails ? "Idle" : "Needs attention",
+      ),
+    );
+  },
+);
+
 it.each(["accepted", "rejected"] as const)(
   "moves same-thread activity only after steering is accepted: %s",
   async (outcome) => {
@@ -3927,6 +4438,30 @@ it("does not title a conversation outside a Solo chat", async () => {
     1,
   );
   expect(named).not.toHaveBeenCalled();
+});
+
+it("keeps the first-message title without another protected model input", async () => {
+  const f = protectedPreview();
+  asSoloChat(f);
+  const named = vi.fn();
+  if (!f.handle) throw new Error("Missing protected handle");
+  await f.runtime.run({
+    ...f.delivery("Summarize this untrusted note"),
+    agent: f.handle,
+    config: f.agent.config,
+    named,
+  });
+  await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+  await f.worker.complete(0, "Summary");
+  await vi.waitFor(() =>
+    expect(f.runtime.sessions(pubkey)[0]?.status).toBe("Idle"),
+  );
+  expect(
+    f.worker.sent.filter((wire) => wire.method === "thread/start"),
+  ).toHaveLength(1);
+  expect(f.worker.starts()).toHaveLength(1);
+  expect(named).not.toHaveBeenCalled();
+  expect(f.starts()).toEqual([]);
 });
 
 it("finishes a Solo turn under its policy when the chat is converted mid-turn", async () => {

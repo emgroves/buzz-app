@@ -81,6 +81,8 @@ export class AgentProtectionService extends Service {
       abort: AbortController;
       epoch: number;
       spawn: Host["spawn"];
+      /** Its review spawn for each model runtime, kept for its lifetime. */
+      reviewers: Map<string, ProtectedSpawn>;
     }
   >();
   private epoch = 0;
@@ -192,9 +194,13 @@ export class AgentProtectionService extends Service {
     if (new TextEncoder().encode(JSON.stringify(prompt)).length > 768 * 1024)
       throw new Error("Model completion context is too large");
     const protection = this.providers.get(caller);
-    const spawn = protection?.value.runtimeProcesses?.[model.runtime]
-      ? this.runtimeSpawn(caller, protection, model.runtime, signal)
-      : undefined;
+    // The same spawn for every review, so the runtime can keep its worker;
+    // revoking the provider kills it.
+    let spawn = protection?.reviewers.get(model.runtime);
+    if (protection?.value.runtimeProcesses?.[model.runtime] && !spawn) {
+      spawn = this.runtimeSpawn(caller, protection, model.runtime);
+      protection.reviewers.set(model.runtime, spawn);
+    }
     const result = await provider.complete(
       {
         id: model.id,
@@ -274,6 +280,7 @@ export class AgentProtectionService extends Service {
       spawn: host?.spawn?.bind(host),
       abort: new AbortController(),
       epoch: ++this.epoch,
+      reviewers: new Map<string, ProtectedSpawn>(),
     };
     this.providers.get(id)?.abort.abort();
     this.providers.set(id, next);
@@ -288,12 +295,10 @@ export class AgentProtectionService extends Service {
     id: string,
     provider: NonNullable<ReturnType<typeof this.providers.get>>,
     runtime: string,
-    signal?: AbortSignal,
   ): ProtectedSpawn {
     const processId = provider.value.runtimeProcesses?.[runtime];
     const spawn = provider.spawn;
     const assertAvailable = () => {
-      signal?.throwIfAborted();
       if (provider.abort.signal.aborted || this.providers.get(id) !== provider)
         throw new Error("The required protection plugin is unavailable");
     };
@@ -305,9 +310,7 @@ export class AgentProtectionService extends Service {
         );
       let process: HostProcess | undefined;
       const stop = () => void process?.kill();
-      const stopped = signal
-        ? AbortSignal.any([signal, provider.abort.signal])
-        : provider.abort.signal;
+      const stopped = provider.abort.signal;
       stopped.addEventListener("abort", stop, { once: true });
       try {
         process = await spawn(processId, {
