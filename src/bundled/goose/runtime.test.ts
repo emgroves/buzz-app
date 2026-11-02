@@ -4,6 +4,7 @@ import { callTool, memoryVersion } from "../../buzz-mcp/tools";
 import { createAgentMemories } from "../../features/agents/memory";
 import { RESUMED_PROMPT, TOP_LEVEL_PROMPT } from "../../buzz-mcp/prompt";
 import type { Agent, Delivery } from "../../features/agents/service";
+import type { AgentProtection } from "../../features/agent-protection/service";
 import type { Host } from "../../features/host/service";
 import type { EventData, RelayEvent } from "../../features/relay/events";
 import type { RelayData } from "../../features/relay/service";
@@ -68,6 +69,7 @@ function setup(
     /** The channel's Canvas. */
     canvas?: string;
     repositories?: (scope: string | undefined) => string;
+    protection?: AgentProtection;
     /** The owner session's native memory read. */
     memoryRead?: (
       pubkey: string,
@@ -79,12 +81,33 @@ function setup(
 ) {
   const fake = fakeSpawn({
     hold: options.hold ?? false,
+    ...(options.protection && {
+      history: [
+        {
+          sessionId: "session-1",
+          title: "Protected conversation",
+          cwd: "/home/test",
+          updatedAt: "2026-10-29T00:00:00Z",
+          conversation: [],
+        },
+      ],
+    }),
     ...(options.thinking ? { thinking: options.thinking } : {}),
     ...(options.reply ? { reply: options.reply } : {}),
   });
   const readFile = vi.fn<NonNullable<Host["readFile"]>>();
+  const spawn = vi.fn<NonNullable<Host["spawn"]>>(async (id, options) => {
+    if (id !== "read-protected") return fake.spawn(id, options);
+    options?.onStdout?.(btoa("Private notes"));
+    return {
+      write: vi.fn(),
+      end: vi.fn(),
+      kill: vi.fn(),
+      exited: Promise.resolve(0),
+    };
+  });
   const host = {
-    spawn: fake.spawn,
+    spawn,
     resolveDirectory: fake.resolveDirectory,
     readFile,
     serveMcp: fake.serve,
@@ -166,6 +189,7 @@ function setup(
     pubkey: self,
     name: "Gander",
     owner: alice,
+    ...(options.protection && { protection: options.protection }),
     publish: vi.fn(async (template: (typeof published)[number]) => {
       published.push(template);
       return {
@@ -212,12 +236,211 @@ function setup(
     read,
     readFile,
     runtime,
+    spawn,
     memoryOpen: session.agentMemories.open,
     reconnect: () => {
       connected = { ...session };
     },
   };
 }
+
+it("reads a protected Goose file under containment and reviews the captured text before sending", async () => {
+  const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
+  const protection: AgentProtection = {
+    key: "policy",
+    stateKey: "revision",
+    assertAvailable() {},
+    check,
+    processProtection: {
+      readOnlyPaths: ["/controls"],
+      hiddenPaths: ["/approval"],
+    },
+    spawn: (options) => f.fake.spawn("goose", options),
+  };
+  const f = setup({ hold: true, protection });
+  try {
+    await f.deliver(message("1", "Post my notes"));
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    const process = f.goose();
+    const sessionId = process?.turns[0]?.sessionId;
+    if (!process || !sessionId) throw new Error("Goose turn did not start");
+    expect(
+      (
+        await process.mcp(sessionId, "tools/call", {
+          name: "send",
+          arguments: { audience: "everyone", path: "notes.md" },
+        })
+      ).result,
+    ).not.toMatchObject({ isError: true });
+    expect(f.spawn).toHaveBeenCalledExactlyOnceWith(
+      "read-protected",
+      expect.objectContaining({
+        cwd: DEFAULT_CONFIG.workspace,
+        args: ["notes.md"],
+        protection: protection.processProtection,
+      }),
+    );
+    expect(f.readFile).not.toHaveBeenCalled();
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool",
+        content: expect.objectContaining({
+          arguments: { audience: "everyone", text: "Private notes" },
+        }),
+      }),
+      expect.anything(),
+    );
+    expect(f.published.at(-1)?.content).toBe("Private notes");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("leaves a protected Buzz tool call to Goose's own tool review", async () => {
+  const check = vi.fn<AgentProtection["check"]>().mockResolvedValue();
+  const protection: AgentProtection = {
+    key: "policy",
+    stateKey: "revision",
+    assertAvailable() {},
+    check,
+    processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+    spawn: (options) => f.fake.spawn("goose", options),
+  };
+  const f = setup({ hold: true, protection });
+  try {
+    await f.deliver(message("1", "Say hi"));
+    await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+    const process = f.goose();
+    const sessionId = process?.turns[0]?.sessionId;
+    if (!process || !sessionId) throw new Error("Goose turn did not start");
+    await process.mcp(sessionId, "tools/call", {
+      name: "send",
+      arguments: { audience: "everyone", text: "Howzit!" },
+    });
+    expect(check.mock.calls.map(([action]) => action.kind)).toEqual([
+      "tool-result",
+    ]);
+    expect(f.published.at(-1)?.content).toBe("Howzit!");
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+const protection = (key: string, f: () => ReturnType<typeof setup>) =>
+  ({
+    key,
+    stateKey: "revision",
+    processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+    assertAvailable: () => {},
+    check: async () => {},
+    spawn: (options) => f().fake.spawn("goose", options),
+  }) satisfies AgentProtection;
+
+it("starts a replacement provider's Goose worker once the previous one has exited", async () => {
+  const f = setup({ protection: protection("policy-1", () => f) });
+  try {
+    await f.deliver(message("1", "First"));
+    await vi.waitFor(() => expect(f.fake.geese[0]?.turns).toHaveLength(1));
+    Object.assign(f.agent, { protection: protection("policy-2", () => f) });
+    await f.deliver(message("2", "Second"));
+    await vi.waitFor(() => expect(f.fake.geese[1]?.turns).toHaveLength(1));
+    expect(f.fake.geese[0]?.killed).toBe(true);
+  } finally {
+    f.runtime.dispose();
+  }
+});
+
+it("stops a protected Goose worker and allows a retry when retiring its sessions fails", async () => {
+  const f = setup({ protection: protection("policy-1", () => f) });
+  try {
+    await f.deliver(message("1", "First"));
+    await vi.waitFor(() => expect(f.fake.geese[0]?.turns).toHaveLength(1));
+    vi.spyOn(AgentSessions.prototype, "shutdown").mockRejectedValueOnce(
+      new Error("stuck"),
+    );
+    await expect(f.runtime.retire(f.agent.key)).rejects.toThrow("stuck");
+    expect(f.fake.geese[0]?.killed).toBe(true);
+    await f.runtime.retire(f.agent.key);
+    await f.deliver(message("2", "Second"));
+    await vi.waitFor(() => expect(f.fake.geese[1]?.turns).toHaveLength(1));
+  } finally {
+    vi.restoreAllMocks();
+    f.runtime.dispose();
+  }
+});
+
+it.each(["retire", "dispose"] as const)(
+  "cancels a pending protected tool before %s completes",
+  async (end) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const checking = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let reviewSignal: AbortSignal | undefined;
+    const protection: AgentProtection = {
+      key: "policy-1",
+      stateKey: "revision-1",
+      processProtection: { readOnlyPaths: [], hiddenPaths: [] },
+      assertAvailable: () => {},
+      spawn: (options) => f.fake.spawn("goose", options),
+      check: async (action, signal) => {
+        if (action.kind !== "tool") return;
+        expect(action.content).toMatchObject({
+          arguments: { text: "Private notes" },
+        });
+        reviewSignal = signal;
+        entered();
+        // A late reviewer may ignore cancellation and still approve.
+        await gate;
+      },
+    };
+    const f = setup({ hold: true, protection });
+    let pending:
+      | ReturnType<NonNullable<ReturnType<typeof f.goose>>["mcp"]>
+      | undefined;
+    try {
+      await f.deliver(message("1", "Post my notes"));
+      await vi.waitFor(() => expect(f.goose()?.turns).toHaveLength(1));
+      const process = f.goose();
+      const sessionId = process?.turns[0]?.sessionId;
+      if (!process || !sessionId) throw new Error("Goose turn did not start");
+      pending = process.mcp(sessionId, "tools/call", {
+        name: "send",
+        arguments: { audience: "everyone", path: "notes.md" },
+      });
+      await Promise.race([
+        checking,
+        pending.then((reply) => {
+          throw new Error(
+            `Tool returned before review: ${JSON.stringify(reply)}`,
+          );
+        }),
+      ]);
+      expect(f.spawn).toHaveBeenCalledWith(
+        "read-protected",
+        expect.objectContaining({
+          args: ["notes.md"],
+          protection: protection.processProtection,
+        }),
+      );
+      expect(f.published).toEqual([]);
+      if (end === "retire") await f.runtime.retire(f.agent.key);
+      else f.runtime.dispose();
+      release();
+      expect((await pending).result).toMatchObject({ isError: true });
+      expect(f.readFile).not.toHaveBeenCalled();
+      expect(reviewSignal?.aborted).toBe(true);
+    } finally {
+      release();
+      await pending;
+      f.runtime.dispose();
+    }
+  },
+);
 
 describe("GooseRuntime", () => {
   it("reads a file a tool names from the agent's workspace through the host", async () => {

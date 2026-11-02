@@ -4,6 +4,10 @@
 // into Buzz.
 import type { ModelChoice } from "../../features/agents/ModelPicker";
 import type {
+  ProtectedSpawn,
+  ReviewPrompt,
+} from "../../features/agent-protection/models";
+import type {
   AgentProviderSnapshot,
   Models,
 } from "../../features/agents/service";
@@ -309,6 +313,53 @@ export class GooseSetup {
       this.listing = undefined;
     });
     return this.listing;
+  }
+
+  review(
+    model: { provider?: string; id: string },
+    prompt: ReviewPrompt,
+    signal: AbortSignal,
+    spawn?: ProtectedSpawn,
+  ) {
+    signal.throwIfAborted();
+    const host = this.host;
+    if (!spawn || !host)
+      throw new Error("Protected Goose review worker is unavailable");
+    return (async () => {
+      const cwd = await host.resolveDirectory("~");
+      signal.throwIfAborted();
+      const goose = await GooseProcess.start(
+        (_id, options) => spawn(options ?? {}),
+        { cwd, protected: true, signal },
+      );
+      const cancel = () => void goose.kill();
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        signal.throwIfAborted();
+        const result = (await goose.request(
+          "_buzz/security/review",
+          {
+            provider: model.provider,
+            id: model.id,
+            // Goose's native review takes text only and rejects other fields,
+            // so the schema can only be stated in the trusted instructions.
+            prompt: {
+              system: prompt.outputSchema
+                ? `${prompt.system}\n\nReply with only JSON that matches this JSON Schema, and no other text:\n${JSON.stringify(prompt.outputSchema)}`
+                : prompt.system,
+              input: prompt.input,
+            },
+          },
+          65_000,
+        )) as { text: string; model: { provider: string; id: string } };
+        signal.throwIfAborted();
+        return result;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        await goose.kill();
+        await goose.exited;
+      }
+    })();
   }
 
   /** Databricks catalogs can lag its endpoints and AI Gateway services;

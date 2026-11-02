@@ -164,6 +164,10 @@ export class AgentSessions {
   active(key: string) {
     return this.opening.has(key) || !!this.live.get(key)?.session.working;
   }
+  /** The harness session serving a conversation or one-off turn. */
+  sessionId(key: string) {
+    return (this.live.get(key) ?? this.once.get(key))?.session.id;
+  }
   /** Conversations with a session, whether each is working, and when each
    * last took in a message or ended a turn. */
   snapshot(): {
@@ -441,6 +445,21 @@ export class AgentSessions {
 
   /** Closes its sessions, ending their turns; the process keeps serving other
    * agents. */
+  async shutdown() {
+    this.disposed = true;
+    const live = [...this.live.values(), ...this.once.values()].filter(
+      (entry): entry is Live => !!entry,
+    );
+    for (const [key, entry] of this.live) {
+      clearTimeout(entry.timer);
+      this.live.delete(key);
+      this.shown.delete(key);
+    }
+    await Promise.all(
+      live.map((entry) => entry.process.close(entry.session, true)),
+    );
+    this.options.onChange?.();
+  }
   dispose() {
     this.disposed = true;
     for (const [key, live] of this.live) this.drop(key, live);

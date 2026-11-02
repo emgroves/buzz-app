@@ -124,6 +124,31 @@ const host = (cap: number) => {
 };
 
 describe("AgentSessions", () => {
+  it("maps conversation and one-off keys to their native session IDs", async () => {
+    const { fake, sessions, process } = setup({}, true);
+    const delivery = sessions.deliver("thread", "one", 1);
+    const once = sessions.runOnce("watch", () => "two");
+    try {
+      await vi.waitFor(() => expect(fake.geese[0]?.turns).toHaveLength(2));
+      const turns = fake.geese[0]?.turns ?? [];
+      const normal = turns.find((turn) => turn.text === "one");
+      const standalone = turns.find((turn) => turn.text === "two");
+      expect(normal?.sessionId).toBeDefined();
+      expect(standalone?.sessionId).toBeDefined();
+      expect(sessions.sessionId("thread")).toBe(normal?.sessionId);
+      expect(sessions.sessionId("watch #1")).toBe(standalone?.sessionId);
+      expect(sessions.sessionId("missing")).toBeUndefined();
+      for (const turn of turns) turn.finish();
+      await Promise.all([delivery, once]);
+      expect(sessions.sessionId("watch #1")).toBeUndefined();
+    } finally {
+      sessions.dispose();
+      await process.shutdown();
+      await Promise.all([delivery, once]);
+    }
+    expect(sessions.sessionId("thread")).toBeUndefined();
+  });
+
   it("serves each conversation from its own session in one process", async () => {
     const { fake, sessions } = setup();
     await sessions.deliver("a", "one", 1);

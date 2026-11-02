@@ -251,6 +251,8 @@ export function fakeSpawn(
       if (fake.silent.has(method)) return;
       const sessionId = String(params.sessionId ?? "");
       switch (method) {
+        case "_buzz/security/capabilities":
+          return reply(id, { version: 2 });
         case "initialize":
           return reply(id, {
             protocolVersion: 1,

@@ -73,6 +73,26 @@ afterEach(() => {
 });
 
 describe("GooseProcess", () => {
+  it.each([false, true])(
+    "suppresses auxiliary title inference only for protected workers (%s)",
+    async (protectedWorker) => {
+      const fake = fakeSpawn();
+      const goose = await GooseProcess.start(fake.spawn, {
+        cwd: "/work",
+        protected: protectedWorker,
+        env: { GOOSE_DISABLE_SESSION_NAMING: "false" },
+      });
+      try {
+        expect(fake.geese[0]?.env.GOOSE_DISABLE_SESSION_NAMING).toBe(
+          protectedWorker ? "true" : "false",
+        );
+      } finally {
+        await goose.kill();
+        await goose.exited;
+      }
+    },
+  );
+
   it("starts goose-acp without the app's Buzz identity or goose choice", async () => {
     const { process } = await start();
     expect(process.options.cwd).toBe("/work");
@@ -1454,4 +1474,18 @@ it("lets new work steer while a stopped Attention refresh is still pending", asy
     await goose.close(session);
     await Promise.all([first, stopped, next, later]);
   }
+});
+
+it("does not acknowledge strict retirement when the native session refuses to close", async () => {
+  const { goose, release, waiting } = await slow("session/close", true);
+  const session = await goose.open({
+    cwd: "/work",
+    systemPrompt: "",
+    tools: ok,
+  });
+  const closing = goose.close(session, true);
+  const failed = expect(closing).rejects.toThrow("No active run");
+  await vi.waitFor(() => expect(waiting()).toBe(1));
+  release();
+  await failed;
 });

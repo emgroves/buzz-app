@@ -15,7 +15,7 @@ import { readUsage } from "./usage";
 
 export const TYPE_ID = "goose";
 
-export const inject = ["agents", "host"];
+export const inject = ["agents", "host", "agentProtection"];
 export const apply: PluginModule["apply"] = (ctx) => {
   // Only the desktop app can start `goose-acp`; no unusable type elsewhere.
   if (!isTauri()) return;
@@ -37,6 +37,29 @@ export const apply: PluginModule["apply"] = (ctx) => {
         }
       : undefined;
   const setup = new GooseSetup(desktop, () => runtime.defaultsChanged());
+  ctx.agentProtection.registerModels({
+    label: "Goose",
+    models: async () => {
+      const { providers } = await setup.providers();
+      return (
+        await Promise.all(
+          providers
+            .filter((provider) => provider.configured)
+            .map(async (provider) =>
+              (
+                await setup.models(provider.id)
+              ).map((model) => ({
+                provider: provider.id,
+                id: model.id,
+                label: `${provider.name} · ${model.label}`,
+              })),
+            ),
+        )
+      ).flat();
+    },
+    complete: (model, prompt, signal, protectedSpawn) =>
+      setup.review(model, prompt, signal, protectedSpawn),
+  });
   const history = new GooseHistory(desktop);
   const {
     Create,
@@ -66,6 +89,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
 
   agents.register<Config>({
     id: TYPE_ID,
+    retire: (pubkey) => runtime.retire(pubkey),
+    protection: true,
     title: "Goose",
     icon: GooseLogoIcon,
     description:
