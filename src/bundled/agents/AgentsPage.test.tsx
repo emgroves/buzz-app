@@ -43,6 +43,7 @@ import type { OpenTarget } from "../../features/navigation/targets";
 import { PlugIcon, RobotIcon } from "../../shared/design-system/icons";
 import { AgentSettings } from "../../app/AgentSettings";
 import { AgentsPage } from "./AgentsPage";
+import { ActivityTranscript } from "../../features/agents/ActivityTranscript";
 
 vi.mock("../../features/profiles/avatar-upload", async (actual) => ({
   ...(await actual<typeof import("../../features/profiles/avatar-upload")>()),
@@ -3488,6 +3489,98 @@ it("opens the owned agent provider Activity tab for the originating conversation
     expect(
       screen.queryByRole("tab", { name: "Activity" }),
     ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    owner.dispose();
+  }
+});
+
+it("opens a turn's thread or channel from its label on the Agents page Activity tab", async () => {
+  const user = userEvent.setup();
+  const ada = agent("Ada", 1);
+  const open = vi.fn(async () => ({ status: "opened" as const }));
+  const navigator = { open } as unknown as Navigation;
+  const view = setup([ada], { page: { navigator } });
+  const owner = createRelaySession(null);
+  const origin = "https://relay.test";
+  const snapshot = {
+    status: "ready" as const,
+    generation: 1,
+    viewer: ada.owner,
+    origin,
+    scope: `${origin}:${ada.owner}`,
+    session: owner.session,
+  };
+  const relay = { ...view.relay, snapshot: () => snapshot };
+  const root = "c".repeat(64);
+  const turn = (turnId: string, threadRootId: string | null) => ({
+    turnId,
+    channelId: "channel-a",
+    threadRootId,
+    triggeringEventIds: [],
+    newSession: false,
+    config: [],
+    startedAt: Date.parse("2026-10-20T12:00:00Z"),
+    endedAt: Date.parse("2026-10-20T12:01:00Z"),
+    partial: false,
+    items: [],
+  });
+  const transcript = { turns: [turn("thread", root), turn("channel", null)] };
+  // Like a harness's Activity tab: it hands the host's opener to the transcript.
+  const Activity = ({ openConversation }: AgentViewProps) => (
+    <ActivityTranscript
+      transcript={transcript}
+      agentName="Ada"
+      state={() => "ended"}
+      openConversation={openConversation}
+    />
+  );
+  const echo = view.agents.types()[0];
+  if (!echo) throw new Error("Missing fixture type");
+  const types = [
+    {
+      ...echo,
+      tabs: [
+        {
+          id: "activity",
+          title: "Activity",
+          role: "activity" as const,
+          component: Activity,
+        },
+      ],
+    },
+  ];
+  view.agents.types = () => types;
+  try {
+    view.rerender(
+      <AgentsPage agents={view.agents} relay={relay} navigator={navigator} />,
+    );
+    await user.click(screen.getByRole("gridcell", { name: /Ada/ }));
+    const profile = await screen.findByRole("region", {
+      name: "Agent profile",
+    });
+    await user.click(within(profile).getByRole("tab", { name: "Activity" }));
+    const scope = { viewer: ada.owner, communityOrigin: origin };
+    await user.click(
+      within(profile).getByRole("button", { name: "Thread cccccccc" }),
+    );
+    // A thread opens at its root message, which names the thread.
+    expect(open).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "channel-a",
+      messageId: root,
+      threadRootId: root,
+    });
+    await user.click(within(profile).getByRole("button", { name: "Channel" }));
+    expect(open).toHaveBeenLastCalledWith({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId: "channel-a",
+    });
+    expect(open).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     owner.dispose();

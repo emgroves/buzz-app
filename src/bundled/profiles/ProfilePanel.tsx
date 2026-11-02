@@ -62,6 +62,7 @@ import type {
 import type { CommunityReader } from "../../features/communities/service";
 import { agentSections } from "../../features/agents/tabs";
 import { useAgentSettingsHost } from "../agents/AgentSettingsHost";
+import { conversationOpener } from "../agents/routes";
 import { avatarMedia } from "../../shared/avatar-source";
 import { writeClipboardText } from "../../shared/clipboard";
 
@@ -132,19 +133,11 @@ export function ProfilePanel({
   if (!pubkey) return <p>Unsupported profile.</p>;
   if (connection.status !== "ready")
     return <p>Connect to a community to view this profile.</p>;
-  const community = panelCommunity(connection.scope, connection.viewer);
   // An agent's activity opens a turn's conversation in this community.
-  const openConversation: AgentViewProps["openConversation"] =
-    navigation && community
-      ? (channelId, threadRootId) =>
-          void navigation.open({
-            version: 1,
-            kind: "conversation",
-            scope: community,
-            channelId,
-            ...(threadRootId ? { messageId: threadRootId, threadRootId } : {}),
-          })
-      : undefined;
+  const openConversation = conversationOpener(
+    navigation,
+    panelCommunity(connection.scope, connection.viewer),
+  );
   if (
     agents &&
     owned &&

@@ -1,4 +1,10 @@
-import type { JsonValue, OpenTarget } from "../../features/navigation/targets";
+import type { AgentViewProps } from "../../features/agents/service";
+import type { Navigation } from "../../features/navigation/controller";
+import type {
+  JsonValue,
+  NavigationScope,
+  OpenTarget,
+} from "../../features/navigation/targets";
 
 type PageTarget = Extract<OpenTarget, { kind: "page" }>;
 const providerKey = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
@@ -49,4 +55,21 @@ export function agentProviderTarget(
   return provider
     ? { ...page, route: { version: 1, params: { provider } } }
     : page;
+}
+
+/** Opens an activity turn's channel, or its thread at the root, in `scope`'s
+ * community; undefined where the host can't navigate there. */
+export function conversationOpener(
+  navigation: Navigation | undefined,
+  scope: NavigationScope | undefined,
+): AgentViewProps["openConversation"] {
+  if (!navigation || !scope) return undefined;
+  return (channelId, threadRootId) =>
+    void navigation.open({
+      version: 1,
+      kind: "conversation",
+      scope,
+      channelId,
+      ...(threadRootId ? { messageId: threadRootId, threadRootId } : {}),
+    });
 }

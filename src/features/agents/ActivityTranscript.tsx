@@ -31,7 +31,7 @@ import {
   formatItemTimestamp,
   formatTime,
 } from "../../shared/datetime";
-import { Button } from "../../shared/design-system/ui/Button";
+import referenceStyles from "../../shared/InlineReference.module.css";
 import type { AgentViewProps } from "./service";
 import styles from "./ActivityTranscript.module.css";
 
@@ -227,9 +227,14 @@ function Turn({
           <span>
             {" · "}
             {open ? (
-              <Button variant="link" size="inline" onClick={open}>
+              // The shared inline link, in the header's own type.
+              <button
+                type="button"
+                className={referenceStyles.link}
+                onClick={open}
+              >
                 {place}
-              </Button>
+              </button>
             ) : (
               place
             )}
