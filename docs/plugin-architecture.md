@@ -1786,15 +1786,16 @@ Plugins can render the host-provided [`browser.View` component](browser.md) insi
 
 ## GitHub pull request states
 
-While the bundled GitHub plugin is on, it provides `ctx.github`: the pull
+While the bundled GitHub plugin is on, it provides `ctx.githubPulls`: the pull
 request states the app already holds, read-only. Links in messages, the panel
 and agents' watches read pull requests; `ctx.github` never reads GitHub, so
 using it costs nothing against GitHub's limits. `pullState(url)` gives
 `"open"`, `"draft"`, `"merged"` or `"closed"`, or undefined when the app holds
 no state for it (not read, could not be read, or forgotten after nobody showed
-it for a while). `subscribe(listener)` calls back when a held state changes.
+it for a while). `subscribe(listener)` calls back after a read records a changed state; a
+state the app forgets is not announced.
 The service goes away when the GitHub plugin is turned off, so take it with
-`ctx.inject(["github"], (child) => …)` rather than a top-level `inject`, which
+`ctx.inject(["githubPulls"], (child) => …)` rather than a top-level `inject`, which
 would keep the plugin from starting without it.
 
 ## Decisions

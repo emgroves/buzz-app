@@ -195,7 +195,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
   });
   addPullStateTool(ctx.agents, states);
   // Other plugins can see the states the app holds, without reading GitHub.
-  ctx.provide("github", gitHubPulls(states));
+  ctx.provide("githubPulls", gitHubPulls(states));
   // Agents can watch pull requests where the app runs them.
   ctx.inject(["agents", "host", "navigation"], (scope) =>
     watchPulls(scope, states, gh, presentPull(scope.navigation)),

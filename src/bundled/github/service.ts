@@ -12,8 +12,9 @@ export type GitHubPulls = Readonly<{
    * of its pages, such as its files). A merged
    * pull request stays merged. */
   pullState(url: string): "open" | "draft" | "merged" | "closed" | undefined;
-  /** Calls `listener` when a held state changes; read `pullState` again
-   * then. It does not make the app read anything. */
+  /** Calls `listener` after a read records a changed state; read
+   * `pullState` again then. A state the app forgets is not announced. It
+   * does not make the app read anything. */
   subscribe(listener: () => void): () => void;
 }>;
 
@@ -33,6 +34,6 @@ export function gitHubPulls(states: PullStates): GitHubPulls {
 
 declare module "@deepseek-ai/cordis" {
   interface Context {
-    github: GitHubPulls;
+    githubPulls: GitHubPulls;
   }
 }

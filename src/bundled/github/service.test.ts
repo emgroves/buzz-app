@@ -87,3 +87,28 @@ it("stops telling an observer once it unsubscribes, and an observer alone keeps 
   await vi.advanceTimersByTimeAsync(10 * 60_000);
   expect(gh.mock.calls.length).toBe(reads);
 });
+
+it("keeps reading, and telling the other observers, when one observer throws", async () => {
+  const reported = vi.fn();
+  vi.stubGlobal("reportError", reported);
+  const gh = vi.fn(async () => ({
+    r0: rollup("MERGED"),
+  })) as unknown as GitHubCli & ReturnType<typeof vi.fn>;
+  const states = createPullStates(gh);
+  const github = gitHubPulls(states);
+  const failure = new Error("observer failed");
+  github.subscribe(() => {
+    throw failure;
+  });
+  const after = vi.fn();
+  github.subscribe(after);
+  const watched = vi.fn();
+  const unwatch = states.watch(pull, watched);
+  await vi.waitFor(() => expect(after).toHaveBeenCalledOnce());
+  expect(watched).toHaveBeenCalledOnce();
+  expect(reported).toHaveBeenCalledWith(failure);
+  expect(github.pullState(pull)).toBe("merged");
+  expect(states.readAt(pull)?.error).toBeUndefined();
+  unwatch();
+  vi.unstubAllGlobals();
+});

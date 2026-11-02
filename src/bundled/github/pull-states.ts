@@ -666,7 +666,15 @@ export function createPullStates(gh: GitHubCli | undefined): PullStates {
   const notify = (urls: readonly string[]) => {
     for (const url of urls)
       for (const listener of listeners.get(url) ?? []) listener.notify();
-    if (urls.length) for (const observer of [...observers]) observer();
+    // Observers are other plugins' code: one that throws must not fail this
+    // read or keep the rest from hearing of it.
+    if (urls.length)
+      for (const observer of [...observers])
+        try {
+          observer();
+        } catch (error) {
+          (globalThis.reportError ?? console.error)(error);
+        }
   };
   const watchedAt = (url: string, level: PullLevel) =>
     [...(listeners.get(url) ?? [])].some(
