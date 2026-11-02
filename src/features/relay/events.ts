@@ -70,7 +70,9 @@ export function eventsDto(value: unknown): RelayEvent[] {
  * matching content hash AND exact signature can reuse a successful verification.
  * Retains no payload, authorization, freshness or caller-supplied proof symbols. */
 export function createEventVerifier() {
-  const proofs = new ByteLru<string>(2048, 2048 * 192);
+  // Idle sessions periodically re-read the same events. An LRU smaller than that
+  // working set misses on every in-order re-read, so keep it well above it.
+  const proofs = new ByteLru<string>(8192, 8192 * 192);
   return (value: unknown): RelayEvent =>
     checkedEvent(value, (event): event is VerifiedEvent => {
       if (
