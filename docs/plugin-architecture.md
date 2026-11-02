@@ -1784,6 +1784,19 @@ media response. Native microphone permissions were exercised in the staging app.
 
 Plugins can render the host-provided [`browser.View` component](browser.md) inside a panel. It opens HTTP(S) pages beside the conversation on macOS desktop. The host owns website rendering, navigation controls, and native session cleanup. Remote pages receive no Buzz IPC bridge; plugin JavaScript remains trusted same-process code. The [capability guide](browser.md#try-the-capability-with-a-local-plugin) includes a complete local-plugin example and installation steps.
 
+## GitHub pull request states
+
+While the bundled GitHub plugin is on, it provides `ctx.github`: the pull
+request states the app already holds, read-only. Links in messages, the panel
+and agents' watches read pull requests; `ctx.github` never reads GitHub, so
+using it costs nothing against GitHub's limits. `pullState(url)` gives
+`"open"`, `"draft"`, `"merged"` or `"closed"`, or undefined when the app holds
+no state for it (not read, could not be read, or forgotten after nobody showed
+it for a while). `subscribe(listener)` calls back when a held state changes.
+The service goes away when the GitHub plugin is turned off, so take it with
+`ctx.inject(["github"], (child) => …)` rather than a top-level `inject`, which
+would keep the plugin from starting without it.
+
 ## Decisions
 
 The host composes one `DecisionsService` in `app/services.ts`. Plugins, bundled

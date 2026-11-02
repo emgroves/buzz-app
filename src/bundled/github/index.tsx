@@ -38,6 +38,7 @@ import {
   type PullStates,
 } from "./pull-states";
 import { addPullStateTool } from "./pull-state-tool";
+import { gitHubPulls } from "./service";
 import { isRetryableRead, retryRead } from "../../features/relay/read-retry";
 import { stateIcons } from "./pull-state-view";
 import { PullLink } from "./PullLink";
@@ -193,6 +194,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
     },
   });
   addPullStateTool(ctx.agents, states);
+  // Other plugins can see the states the app holds, without reading GitHub.
+  ctx.provide("github", gitHubPulls(states));
   // Agents can watch pull requests where the app runs them.
   ctx.inject(["agents", "host", "navigation"], (scope) =>
     watchPulls(scope, states, gh, presentPull(scope.navigation)),

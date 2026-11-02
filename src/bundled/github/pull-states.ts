@@ -184,6 +184,10 @@ export type PullStates = Readonly<{
     level?: PullLevel,
     options?: Readonly<{ polling?: Polling; wantsText?: WantsText }>,
   ): () => void;
+  /** Calls `listener` after any read records a changed state, for any pull
+   * request. Unlike `watch`, it keeps nothing current and reads nothing: an
+   * observer sees only what readers had read anyway. */
+  observe(listener: () => void): () => void;
   /** Its latest state, kept when a later read fails; `"failed"` when it was
    * never read or `url` is not a pull request's, or undefined before the
    * first read. */
@@ -655,10 +659,14 @@ export function createPullStates(gh: GitHubCli | undefined): PullStates {
   let scheduled = false;
   /** How many pull requests readers asked for the read in flight has. */
   let asking = 0;
-  /** Tells whoever watches `urls` that their states were recorded. */
+  /** Those told of every change, who keep nothing read (see `observe`). */
+  const observers = new Set<() => void>();
+  /** Tells whoever watches `urls`, and every observer, that their states
+   * were recorded. */
   const notify = (urls: readonly string[]) => {
     for (const url of urls)
       for (const listener of listeners.get(url) ?? []) listener.notify();
+    if (urls.length) for (const observer of [...observers]) observer();
   };
   const watchedAt = (url: string, level: PullLevel) =>
     [...(listeners.get(url) ?? [])].some(
@@ -1015,6 +1023,14 @@ export function createPullStates(gh: GitHubCli | undefined): PullStates {
         if (requests.size || asking) return;
         controller?.abort();
         controller = undefined;
+      };
+    },
+    observe(listener) {
+      // Its own wrapper, so one listener observing twice is two observers.
+      const observer = () => listener();
+      observers.add(observer);
+      return () => {
+        observers.delete(observer);
       };
     },
     get(url) {
