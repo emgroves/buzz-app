@@ -9,6 +9,7 @@ const second = "https://github.com/block/buzz/pull/9";
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 const rollup = (state: string, isDraft = false) => ({
@@ -110,5 +111,4 @@ it("keeps reading, and telling the other observers, when one observer throws", a
   expect(github.pullState(pull)).toBe("merged");
   expect(states.readAt(pull)?.error).toBeUndefined();
   unwatch();
-  vi.unstubAllGlobals();
 });

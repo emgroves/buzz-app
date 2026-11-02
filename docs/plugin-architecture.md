@@ -1788,7 +1788,7 @@ Plugins can render the host-provided [`browser.View` component](browser.md) insi
 
 While the bundled GitHub plugin is on, it provides `ctx.githubPulls`: the pull
 request states the app already holds, read-only. Links in messages, the panel
-and agents' watches read pull requests; `ctx.github` never reads GitHub, so
+and agents' watches read pull requests; `ctx.githubPulls` never reads GitHub, so
 using it costs nothing against GitHub's limits. `pullState(url)` gives
 `"open"`, `"draft"`, `"merged"` or `"closed"`, or undefined when the app holds
 no state for it (not read, could not be read, or forgotten after nobody showed
