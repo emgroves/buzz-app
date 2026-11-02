@@ -604,10 +604,24 @@ function ActivityBubble({
 /** Message-linked work replaces the composer control; unassociated work keeps
  * main's existing presentation rather than disappearing without a bubble. */
 export function ActivityTypingReplacement(props: ComposerAccessoryProps) {
-  const activity = useSyncExternalStore(
+  // Subscribe to which agents are replaced, not every observer frame.
+  const agents = useSyncExternalStore(
     props.session.agentActivity.subscribe,
-    props.session.agentActivity.snapshot,
+    () => replacedAgents(props),
   );
+  return (
+    <>
+      {agents
+        .split(",")
+        .filter(Boolean)
+        .map((agent) => (
+          <TypingReplacement key={agent} {...props} agent={agent} />
+        ))}
+    </>
+  );
+}
+function replacedAgents(props: ComposerAccessoryProps) {
+  const activity = props.session.agentActivity.snapshot();
   const ids = [
     ...(props.threadRootId ? [props.threadRootId] : []),
     ...(activity.local ?? [])
@@ -630,14 +644,9 @@ export function ActivityTypingReplacement(props: ComposerAccessoryProps) {
         : [],
     ),
   ];
-  const agents = requestWork(activity, props.channelId, ids);
-  return (
-    <>
-      {agents.map(({ agent }) => (
-        <TypingReplacement key={agent} {...props} agent={agent} />
-      ))}
-    </>
-  );
+  return requestWork(activity, props.channelId, ids)
+    .map(({ agent }) => agent)
+    .join(",");
 }
 function TypingReplacement({
   session,

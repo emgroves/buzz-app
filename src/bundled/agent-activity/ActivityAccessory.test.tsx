@@ -12,6 +12,7 @@ import {
   within,
 } from "@testing-library/react";
 
+import { Profiler } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   ActivityAccessory,
@@ -1138,6 +1139,28 @@ it("shows nothing later when a stopped hosted turn ends before its 30 seconds", 
     expect(notStopped()).toBe(0);
     expect(look().queryByText("Stopping…")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
+it("does not re-render the typing replacement for liveness that leaves its agents unchanged", () => {
+  const f = fixture();
+  const onRender = vi.fn();
+  const view = render(
+    <Profiler id="replacement" onRender={onRender}>
+      <ActivityTypingReplacement {...f.props} />
+    </Profiler>,
+  );
+  try {
+    f.send(A, "here", 1, "turn_started", { triggeringEventIds: [root] });
+    const renders = onRender.mock.calls.length;
+    f.send(A, "here", 2, "turn_liveness");
+    f.send(A, "here", 3, "turn_liveness");
+    expect(onRender).toHaveBeenCalledTimes(renders);
+    f.send(B, "there", 1, "turn_started", { triggeringEventIds: [root] });
+    expect(onRender.mock.calls.length).toBeGreaterThan(renders);
   } finally {
     view.unmount();
     f.dispose();

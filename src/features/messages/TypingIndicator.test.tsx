@@ -10,6 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RelaySession } from "../relay/session";
 import type { TypingEntry } from "../relay/typing";
@@ -640,4 +641,27 @@ it("Solo chat ArrowDown exposes retained thread navigation without opening Activ
     undefined,
   );
   expect(trigger).toHaveFocus();
+});
+
+it("does not re-render for activity updates that leave its agents unchanged", () => {
+  const f = fixture();
+  const entries = [entry()];
+  f.update(entries);
+  const onRender = vi.fn();
+  render(
+    <Profiler id="typing" onRender={onRender}>
+      <TypingIndicator session={f.session} channelId="channel" />
+    </Profiler>,
+  );
+  expect(
+    screen.getByRole("button", { name: "Activity: Agent working" }),
+  ).toBeVisible();
+  const renders = onRender.mock.calls.length;
+  f.update(entries, { records: [], turns: [] });
+  f.update(entries, { records: [], turns: [] });
+  expect(onRender).toHaveBeenCalledTimes(renders);
+  f.update([...entries, entry(other, secondRoot)]);
+  expect(
+    screen.getByRole("button", { name: "Activity: 2 agents working" }),
+  ).toBeVisible();
 });
