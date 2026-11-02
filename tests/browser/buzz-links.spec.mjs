@@ -741,7 +741,12 @@ test.describe("links to channels the reader hasn't joined", () => {
       name: "Private channel",
       exact: true,
     });
-    await expect(locked).toHaveAttribute("title", /aren’t a member/);
+    // Links don't record their community: one from another community is
+    // withheld here too, so the explanation covers it.
+    await expect(locked).toHaveAttribute(
+      "title",
+      "Private channel. You aren’t a member, it no longer exists, or the link is from another community.",
+    );
     // The authored label is message text; it stays beside the lock.
     const authored = row.getByRole("link", {
       name: "#launch-plans",

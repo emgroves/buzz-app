@@ -107,7 +107,8 @@ it("coalesces lookups, describes an open channel and withholds a private one", a
   h.channels.refer?.(OPEN);
   h.channels.refer?.(SECRET);
   h.channels.refer?.(OPEN);
-  expect(h.channels.describe?.(SECRET)).toEqual({ state: "unknown" });
+  expect(h.channels.describe?.(SECRET)).toEqual({ state: "looking" });
+  expect(notified).toHaveBeenCalled();
   await h.lookup([OPEN, SECRET], [open(OPEN, "crew")]);
   expect(h.channels.describe?.(OPEN)).toEqual({
     state: "found",
@@ -149,6 +150,8 @@ it("never reports a failed lookup as withheld, and backs off before retrying", a
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "unknown" });
   h.tick(29_999);
   h.channels.refer?.(SECRET);
+  // Nothing is on the way during the backoff.
+  expect(h.channels.describe?.(SECRET)).toEqual({ state: "unknown" });
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(h.pending).toHaveLength(0);
   h.tick(1);
@@ -178,7 +181,8 @@ it("forgets withheld answers when the session cache is cleared", async () => {
   await h.lookup([SECRET], []);
   expect(h.channels.describe?.(SECRET)).toEqual({ state: "withheld" });
   await h.owner.clearCache();
-  expect(h.channels.describe?.(SECRET)).toEqual({ state: "unknown" });
+  // Still demanded, it is looked up again.
+  expect(h.channels.describe?.(SECRET)).toEqual({ state: "looking" });
 });
 
 /** A session restored from the device cache with one joined public channel. */
@@ -246,6 +250,8 @@ it("retries a mounted link after its failure backoff, then stops once unmounted"
   const h = await setup();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const link = renderHook(() => useChannelReference(h.channels, SECRET));
+  expect(link.result.current).toEqual({ state: "looking" });
+  // The failure itself tells the link that nothing is on the way.
   await h.lookup([SECRET], new Error("503"));
   expect(link.result.current).toEqual({ state: "unknown" });
   await h.advance(29_999);
@@ -304,7 +310,7 @@ it("tells a mounted withheld link about a cache reset and looks it up again", as
   await h.lookup([SECRET], []);
   expect(link.result.current).toEqual({ state: "withheld" });
   await act(() => h.owner.clearCache());
-  expect(link.result.current).toEqual({ state: "unknown" });
+  expect(link.result.current).toEqual({ state: "looking" });
   // The channel has since become public.
   await h.lookup([SECRET], [open(SECRET, "launch")]);
   expect(link.result.current).toMatchObject({ state: "found", name: "launch" });

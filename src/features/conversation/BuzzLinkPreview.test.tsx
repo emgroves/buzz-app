@@ -4,7 +4,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { BuzzLinkPreview, previewFailures } from "./BuzzLinkPreview";
 import type { RelaySession } from "../relay/session";
 import type { ThreadSnapshot, ThreadView } from "../relay/threads";
-import type { ChannelMessage, ChannelReference } from "../relay/contracts";
+import type {
+  ChannelList,
+  ChannelMessage,
+  ChannelReference,
+} from "../relay/contracts";
 import { mediaUrl } from "../relay/transport";
 
 afterEach(cleanup);
@@ -30,6 +34,7 @@ function setup(
   messageId = root.id,
   profiles = new Map<string, { name?: string; picture?: string }>(),
   reference?: ChannelReference,
+  status: ChannelList["status"] = "ready",
 ) {
   const views: { view: ThreadView; publish(next: ThreadSnapshot): void }[] = [];
   const starts = [snapshots].flat();
@@ -59,10 +64,11 @@ function setup(
     return view;
   });
   let list = {
-    status: "ready",
+    status,
     channels: [{ id: "channel", name: "General" }],
   };
   let described = reference;
+  const refer = vi.fn(() => () => {});
   const listListeners = new Set<() => void>();
   const session = {
     thread,
@@ -79,7 +85,7 @@ function setup(
       list: () => list,
       ...(reference && {
         describe: () => described,
-        refer: vi.fn(() => () => {}),
+        refer,
       }),
     },
     // The real sizing rewrite behind a pass-through proxy, as the session applies it.
@@ -97,6 +103,7 @@ function setup(
     tree: mounted.container,
     thread,
     views,
+    refer,
     /** The channel lookup answers, as the store notifies list subscribers. */
     answer(next: ChannelReference) {
       described = next;
@@ -171,7 +178,7 @@ it("says why each stopped read fails instead of loading forever, and that the ca
   expect(withheld.thread).not.toHaveBeenCalled();
 });
 it("waits for the channel lookup before trusting a refused read, then reads again", () => {
-  const h = setup([purged, base], root.id, undefined, { state: "unknown" });
+  const h = setup([purged, base], root.id, undefined, { state: "looking" });
   expect(text(h.tree)).toBe("Loading message…");
   // Nothing the answer paints, even before the fresh read, is the refusal.
   const painted: string[] = [];
@@ -198,7 +205,7 @@ it("never shows a read that started before the lookup found the channel", () => 
     [{ ...base, status: "loading", canLoadMore: true }, base],
     root.id,
     undefined,
-    { state: "unknown" },
+    { state: "looking" },
   );
   h.answer(open);
   // The first read's later refusal belongs to a disposed view.
@@ -208,11 +215,28 @@ it("never shows a read that started before the lookup found the channel", () => 
   expect(h.tree.textContent).toContain("reconciled body");
 });
 it("stops reading a channel the lookup withholds", () => {
-  const h = setup(purged, root.id, undefined, { state: "unknown" });
+  const h = setup(purged, root.id, undefined, { state: "looking" });
   h.answer({ state: "withheld" });
   expect(text(h.tree)).toBe(previewFailures.withheld);
   expect(h.thread).toHaveBeenCalledOnce();
   expect(h.views[0]?.view.dispose).toHaveBeenCalledOnce();
+});
+it("stops waiting when the channel lookup fails while the read is refused", () => {
+  const h = setup(purged, root.id, undefined, { state: "looking" });
+  expect(text(h.tree)).toBe("Loading message…");
+  // The store backs off after a failed lookup, so none is on the way.
+  h.answer({ state: "unknown" });
+  expect(text(h.tree)).toBe(previewFailures.unavailable);
+  expect(h.tree.textContent).toContain("Open link");
+  expect(h.thread).toHaveBeenCalledOnce();
+});
+it("trusts a refused read while the channel list isn't ready", () => {
+  for (const status of ["loading", "error"] as const) {
+    const h = setup(purged, root.id, undefined, { state: "unknown" }, status);
+    expect(text(h.tree)).toBe(previewFailures.unavailable);
+    expect(h.refer).not.toHaveBeenCalled();
+    cleanup();
+  }
 });
 it("keeps loading while a read is genuinely in flight", () => {
   const loading = setup({

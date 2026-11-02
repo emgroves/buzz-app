@@ -2630,9 +2630,12 @@ export function createChannelStore(
         joined: false,
       };
     }
-    return currentReferences().withheld.has(id)
+    const state = currentReferences();
+    return state.withheld.has(id)
       ? { state: "withheld" }
-      : { state: "unknown" };
+      : state.queue.has(id) || state.pending.has(id)
+        ? { state: "looking" }
+        : { state: "unknown" };
   }
   /** When a demanded reference may be looked up again: its withheld answer
    * expires, or its backoff ends. */
@@ -2677,6 +2680,8 @@ export function createChannelStore(
     )
       return;
     state.queue.add(id);
+    // Its links now wait for this answer.
+    notify(listListeners);
     if (state.scheduled) return;
     state.scheduled = true;
     // `state` is shared across epochs; this batch belongs to this one.
@@ -2713,6 +2718,8 @@ export function createChannelStore(
               state.pending.delete(id);
               state.retryAt.set(id, now() + wait);
             }
+            // Its links stop waiting through the backoff.
+            notify(listListeners);
             wakeReferences();
           },
         );

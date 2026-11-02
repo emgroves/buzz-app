@@ -23,9 +23,9 @@ import { namedChannel, useChannelReference } from "./channel-reference";
 /** Why a message link's preview can't be shown. Surfaces that report a failed
  * message link use these words too. */
 export const previewFailures = {
-  withheld: "Private channel. You aren’t a member, or it no longer exists.",
-  "not-found":
-    "This message was deleted, or the link is from another community.",
+  withheld:
+    "Private channel. You aren’t a member, it no longer exists, or the link is from another community.",
+  "not-found": "This message was deleted.",
   unavailable: "Couldn’t load this preview.",
 } as const;
 type FoundChannel = Extract<ChannelReference, { state: "found" }>;
@@ -74,8 +74,9 @@ export function BuzzLinkPreview({
       session={session}
       messageId={messageId}
       destination={destination}
-      // A cached-only session never looks one up: its read's answer stands.
-      looking={reference.state === "unknown" && !!session.channels.refer}
+      // Without a lookup on the way (the list isn't ready, a failed one is
+      // backing off, or the store is cached-only), the read's answer stands.
+      looking={reference.state === "looking"}
     />
   );
 }
@@ -91,7 +92,8 @@ function PreviewContent({
   session: RelaySession;
   messageId: string;
   destination: FoundChannel | undefined;
-  /** The channel lookup hasn't answered, so a refused read may yet succeed. */
+  /** A channel lookup is queued or in flight, so a refused read may yet
+   * succeed. */
   looking: boolean;
 }) {
   const snapshot = useSyncExternalStore(
