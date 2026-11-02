@@ -28,6 +28,8 @@ export type LocalWork = Readonly<{
   dismissed?: true;
   /** Its harness can stop the turn it is in. */
   stoppable?: true;
+  /** It can be asked again once it fails. */
+  retryable?: true;
 }>;
 const settled = (state: LocalWorkState) =>
   state === "done" ||
@@ -43,6 +45,9 @@ export type LocalAgentSource = {
   interrupt?(
     work: Pick<LocalWork, "scope" | "agent" | "messageId">,
   ): Promise<void>;
+  /** Asks again for this failed request, which begins it again; throws when
+   * it can't be. */
+  retry?(work: Pick<LocalWork, "scope" | "agent" | "messageId">): void;
 };
 
 /** App-owned local facts. No relay publication, inference, polling or process control. */
@@ -52,6 +57,8 @@ export function createLocalAgentActivity() {
   const entries = new Map<symbol, LocalWork>();
   /** How to stop each stoppable request's turn, until it settles. */
   const stops = new Map<symbol, () => Promise<void>>();
+  /** How to ask each retryable request again, while its row is kept. */
+  const retries = new Map<symbol, () => void>();
   const publish = () => {
     work = Object.freeze([...entries.values()]);
     for (const listener of workListeners) listener();
@@ -99,14 +106,34 @@ export function createLocalAgentActivity() {
         return;
       }
     },
+    retry({ scope, agent, messageId }) {
+      for (const [id, row] of entries) {
+        const retry = retries.get(id);
+        if (
+          retry &&
+          row.state === "error" &&
+          row.scope === scope &&
+          row.agent === agent &&
+          row.messageId === messageId
+        )
+          return retry();
+      }
+      throw new Error("This request can't be retried");
+    },
   };
   return {
     reader,
     begin(
       input: Omit<
         LocalWork,
-        "state" | "startedAt" | "error" | "dismissed" | "stoppable"
+        | "state"
+        | "startedAt"
+        | "error"
+        | "dismissed"
+        | "stoppable"
+        | "retryable"
       >,
+      retry?: () => void,
     ) {
       // Keep the newest accepted handling of one exact message; late completions
       // retain their own token and cannot overwrite its replacement.
@@ -118,6 +145,7 @@ export function createLocalAgentActivity() {
         ) {
           entries.delete(id);
           stops.delete(id);
+          retries.delete(id);
         }
       // Display budget only, independent of execution. Old settled evidence goes first.
       if (entries.size >= 512) {
@@ -127,12 +155,19 @@ export function createLocalAgentActivity() {
         if (victim) {
           entries.delete(victim[0]);
           stops.delete(victim[0]);
+          retries.delete(victim[0]);
         }
       }
       const id = Symbol();
+      if (retry) retries.set(id, retry);
       entries.set(
         id,
-        Object.freeze({ ...input, state: "waiting", startedAt: Date.now() }),
+        Object.freeze({
+          ...input,
+          state: "waiting",
+          startedAt: Date.now(),
+          ...(retry ? { retryable: true } : {}),
+        }),
       );
       publish();
       const update = (
@@ -197,6 +232,7 @@ export function createLocalAgentActivity() {
         },
         remove: () => {
           stops.delete(id);
+          retries.delete(id);
           if (entries.delete(id)) publish();
         },
       };
@@ -210,6 +246,7 @@ export function createLocalAgentActivity() {
         ) {
           entries.delete(id);
           stops.delete(id);
+          retries.delete(id);
           changed = true;
         }
       if (changed) publish();

@@ -841,6 +841,105 @@ it("offers no Stop for a local request that cannot be stopped or has failed", ()
   }
 });
 
+it("retries a failed local request from its row, before Dismiss, which begins it again", () => {
+  const local = createLocalAgentActivity();
+  const f = fixture(local);
+  const view = render(<ActivityAccessory {...f.props} />);
+  const retry = vi.fn(() => void begin());
+  function begin() {
+    return local.begin(
+      {
+        scope: "test",
+        channelId: "c",
+        threadRootId: root,
+        messageId: root,
+        agent: A,
+      },
+      retry,
+    );
+  }
+  try {
+    act(() => begin().finish({ ok: false, error: "Provider unavailable" }));
+    openBubble();
+    const again = screen.getByRole("button", { name: "Retry Blossom" });
+    expect(again).toHaveTextContent("Retry");
+    expect(
+      again.compareDocumentPosition(
+        screen.getByRole("button", { name: "Dismiss error from Blossom" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(again);
+    expect(retry).toHaveBeenCalledOnce();
+    expect(f.props.open).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", {
+        name: "View agent activity: Blossom, Received · waiting to start",
+      }),
+    ).toBeInTheDocument();
+    look();
+    expect(screen.getByText("Received · waiting to start")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry Blossom" }),
+    ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
+it("says why a failed request could not be retried, keeping it to try again or dismiss", () => {
+  const local = createLocalAgentActivity();
+  const f = fixture(local);
+  const view = render(<ActivityAccessory {...f.props} />);
+  const retry = vi.fn(() => {
+    throw new Error("Blossom isn't running here.");
+  });
+  const begin = (agent: string, again?: () => void) =>
+    local.begin(
+      {
+        scope: "test",
+        channelId: "c",
+        threadRootId: root,
+        messageId: root,
+        agent,
+      },
+      again,
+    );
+  try {
+    act(() => {
+      begin(A, retry).finish({ ok: false, error: "Provider unavailable" });
+      begin(B).finish({ ok: false, error: "Busy" });
+    });
+    openBubble();
+    // Only a request that can be asked again offers Retry.
+    expect(
+      screen.queryByRole("button", { name: "Retry Bubbles" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Dismiss error from Bubbles" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Blossom" }));
+    expect(retry).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledExactlyOnceWith(
+      "Couldn’t retry Blossom. Blossom isn't running here.",
+      "error",
+    );
+    expect(screen.getByText("Provider unavailable")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Retry Blossom" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Dismiss error from Blossom" }),
+    );
+    expect(screen.queryByText("Provider unavailable")).toBeNull();
+    expect(retry).toHaveBeenCalledOnce();
+  } finally {
+    view.unmount();
+    f.dispose();
+  }
+});
+
 it("stops a hosted agent's turn through its provider in this thread", async () => {
   const f = fixture();
   const agents = hosted(true);

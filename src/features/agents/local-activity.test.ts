@@ -424,3 +424,93 @@ it("cannot stop work from a source that has no way to interrupt", async () => {
     bare.dispose();
   }
 });
+
+it("retries only the exact failed request, once replaced asking again of its new row", () => {
+  const activity = createLocalAgentActivity();
+  const retry = vi.fn(() => {
+    activity.begin(request(), again);
+  });
+  const again = vi.fn();
+  const work = activity.begin(request(), retry);
+  expect(activity.reader.work()[0]).toMatchObject({
+    state: "waiting",
+    retryable: true,
+  });
+  // Only a failure is asked again.
+  expect(() => activity.reader.retry?.(target)).toThrow(
+    "This request can't be retried",
+  );
+  work.finish({ ok: false, error: "Provider unavailable" });
+  for (const other of [
+    { ...target, scope: "other" },
+    { ...target, agent: "b" },
+    { ...target, messageId: "n" },
+  ])
+    expect(() => activity.reader.retry?.(other)).toThrow();
+  expect(retry).not.toHaveBeenCalled();
+  activity.reader.retry?.(target);
+  expect(retry).toHaveBeenCalledTimes(1);
+  expect(activity.reader.work()).toEqual([
+    expect.objectContaining({ state: "waiting", retryable: true }),
+  ]);
+  // A late outcome of the replaced request changes nothing.
+  work.finish({ ok: false, error: "Late" });
+  expect(() => activity.reader.retry?.(target)).toThrow();
+  expect(again).not.toHaveBeenCalled();
+
+  const plain = createLocalAgentActivity();
+  plain.begin(request()).finish({ ok: false });
+  expect(plain.reader.work()[0]?.retryable).toBeUndefined();
+  expect(() => plain.reader.retry?.(target)).toThrow();
+
+  const cleared = createLocalAgentActivity();
+  const dropped = vi.fn();
+  cleared.begin(request(), dropped).finish({ ok: false });
+  cleared.clear("s", "a");
+  expect(() => cleared.reader.retry?.(target)).toThrow();
+  expect(dropped).not.toHaveBeenCalled();
+});
+
+it("retries through the session only for this scope and accessible channels", () => {
+  const local = createLocalAgentActivity();
+  let allowed = true;
+  const activity = createAgentActivity(
+    false,
+    () => {},
+    (channel) => allowed && channel === "channel",
+    undefined,
+    undefined,
+    { source: local.reader, scope },
+  );
+  const retry = vi.fn();
+  try {
+    local
+      .begin(
+        {
+          scope,
+          agent,
+          channelId: "channel",
+          threadRootId: root,
+          messageId: reply,
+        },
+        retry,
+      )
+      .finish({ ok: false, error: "Provider unavailable" });
+    expect(
+      messageActivity(activity.queries.snapshot(), "channel", reply)[0],
+    ).toMatchObject({ state: "error", retryable: true });
+    allowed = false;
+    expect(() => activity.queries.retry(agent, "channel", reply)).toThrow(
+      "This request can't be retried here",
+    );
+    expect(retry).not.toHaveBeenCalled();
+    allowed = true;
+    activity.queries.retry(agent, "channel", reply);
+    expect(retry).toHaveBeenCalledTimes(1);
+  } finally {
+    activity.dispose();
+  }
+  expect(() => activity.queries.retry(agent, "channel", reply)).toThrow(
+    "This request can't be retried here",
+  );
+});

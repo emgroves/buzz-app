@@ -21,24 +21,26 @@ const pending: {
   step(tool: string, target?: string): void;
   finish(result: WorkOutcome): void;
 }[] = [];
+/** The latest run of request `id`: a retried request runs again. */
+const latest = (id: string) => {
+  const row = pending.filter((row) => row.id === id).at(-1);
+  if (!row) throw new Error("No pending request");
+  return row;
+};
 const controls = {
   pending: () => pending.map((row) => row.id),
   stopped: () => [...stopped],
   /** Hands over and, like a real harness, reports a first step. */
   handover(id: string) {
-    const row = pending.find((row) => row.id === id);
-    if (!row) throw new Error("No pending request");
+    const row = latest(id);
     row.handover();
     row.step("Read", "notes.txt");
   },
   step(id: string, tool: string, target?: string) {
-    const row = pending.find((row) => row.id === id);
-    if (!row) throw new Error("No pending request");
-    row.step(tool, target);
+    latest(id).step(tool, target);
   },
   finish(id: string, ok: boolean) {
-    const row = pending.find((row) => row.id === id);
-    if (!row) throw new Error("No pending request");
+    const row = latest(id);
     row.handover();
     row.finish(
       ok ? { ok: true } : { ok: false, error: "Fixture provider unavailable" },

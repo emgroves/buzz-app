@@ -715,10 +715,12 @@ export function createTabs({
     agent,
     row,
     working,
+    openConversation,
   }: {
     agent: AgentViewProps<Config>["agent"];
     row: Row;
     working?: string | undefined;
+    openConversation: AgentViewProps<Config>["openConversation"];
   }) {
     const workspace = readConfig(agent.config).workspace;
     const [read, setRead] = useState<
@@ -788,6 +790,7 @@ export function createTabs({
           <ActivityTranscript
             transcript={read.transcript}
             agentName={agent.name}
+            openConversation={openConversation}
             state={() => (working ? "working" : undefined)}
             before={
               read.transcript.more && (
@@ -809,11 +812,13 @@ export function createTabs({
     conversation,
     initialTranscript,
     close,
+    openConversation,
   }: {
     agent: AgentViewProps<Config>["agent"];
     conversation?: AgentViewProps<Config>["conversation"];
     initialTranscript?: AgentViewProps<Config>["initialTranscript"];
     close?: AgentViewProps<Config>["close"];
+    openConversation?: AgentViewProps<Config>["openConversation"];
   }) {
     const workspace = readConfig(agent.config).workspace;
     const live = useSyncExternalStore(
@@ -964,6 +969,7 @@ export function createTabs({
               agent={agent}
               row={open}
               working={busy(open.sessionId) ? open.sessionId : undefined}
+              openConversation={openConversation}
             />
           </PanelSubview>
         )}

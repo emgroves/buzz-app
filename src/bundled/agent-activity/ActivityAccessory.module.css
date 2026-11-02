@@ -70,6 +70,7 @@
 .action {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   padding: var(--space-1);
 }
 

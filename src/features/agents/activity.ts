@@ -394,6 +394,12 @@ export function createAgentActivity(
           messageId,
         });
       },
+      /** Asks again for a failed local request, scoped to this session and access. */
+      retry(agent: string, channelId: string, messageId: string) {
+        if (!local?.source.retry || closed || !canAccess(channelId))
+          throw new Error("This request can't be retried here");
+        local.source.retry({ scope: local.scope, agent, messageId });
+      },
       workingSnapshot: () => workingChannels,
       subscribeWorking(listener: () => void) {
         if (closed) return () => {};

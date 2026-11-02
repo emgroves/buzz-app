@@ -31,6 +31,8 @@ import {
   formatItemTimestamp,
   formatTime,
 } from "../../shared/datetime";
+import { Button } from "../../shared/design-system/ui/Button";
+import type { AgentViewProps } from "./service";
 import styles from "./ActivityTranscript.module.css";
 
 type TurnState = "working" | "unknown" | "ended";
@@ -81,7 +83,9 @@ const toolPath = (item: ToolItem) =>
   item.paths[0] && !item.title.includes(item.paths[0]) ? item.paths[0] : "";
 const thread = (turn: TranscriptTurn) =>
   turn.threadRootId === null
-    ? ""
+    ? turn.channelId
+      ? "Channel"
+      : ""
     : turn.threadRootId
       ? `Thread ${turn.threadRootId.slice(0, 8)}`
       : "Thread unknown";
@@ -126,6 +130,7 @@ export function ActivityTranscript({
   state,
   before,
   follow = true,
+  openConversation,
 }: {
   transcript: Transcript;
   agentName: string;
@@ -135,6 +140,8 @@ export function ActivityTranscript({
   /** Scroll the host to the latest step; off where the transcript shares
    * its scroll with other content. */
   follow?: boolean;
+  /** Links each turn's channel or thread; plain text without it. */
+  openConversation?: AgentViewProps["openConversation"];
 }) {
   const timeline = useFollowLatest(transcript, follow);
   return (
@@ -151,6 +158,7 @@ export function ActivityTranscript({
           turn={turn}
           state={turn.endedAt ? "ended" : (state(turn.turnId) ?? "unknown")}
           agentName={agentName}
+          openConversation={openConversation}
         />
       ))}
     </div>
@@ -161,10 +169,12 @@ function Turn({
   turn,
   state,
   agentName,
+  openConversation,
 }: {
   turn: TranscriptTurn;
   state: TurnState;
   agentName: string;
+  openConversation: AgentViewProps["openConversation"];
 }) {
   const status = turn.error
     ? "Error"
@@ -173,9 +183,16 @@ function Turn({
       : turn.endedAt
         ? "Completed"
         : "Status unknown";
+  const place = thread(turn);
+  const { channelId, threadRootId } = turn;
+  // An unknown thread is not opened as its channel.
+  const open =
+    openConversation && channelId && threadRootId !== undefined
+      ? () => openConversation(channelId, threadRootId ?? undefined)
+      : undefined;
   const facts = [
     turn.endedAt ? duration(turn.endedAt - turn.startedAt) : "",
-    thread(turn),
+    place,
     ...turn.config,
     turn.source === "heartbeat" ? "heartbeat" : "",
     turn.newSession ? "new session" : "",
@@ -205,7 +222,16 @@ function Turn({
         )}
         <span data-state={turn.error ? "error" : state}>{status}</span>
         {facts.map((fact) => (
-          <span key={fact}> · {fact}</span>
+          <span key={fact}>
+            {" · "}
+            {fact === place && open ? (
+              <Button variant="link" size="inline" onClick={open}>
+                {fact}
+              </Button>
+            ) : (
+              fact
+            )}
+          </span>
         ))}
       </header>
       {turn.partial && (

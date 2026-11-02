@@ -9,6 +9,7 @@ import type {
   Agent,
   AgentConversation,
   AgentSettingsHost,
+  AgentViewProps,
   Agents,
   RegisteredAgentType,
   TranscriptRequest,
@@ -32,6 +33,7 @@ export function agentSections({
   conversation,
   initialTranscript,
   close,
+  openConversation,
   settingsHost,
   memories,
   communities,
@@ -46,6 +48,8 @@ export function agentSections({
   initialTranscript?: TranscriptRequest | undefined;
   /** Closes the panel the sections are shown in. */
   close?: (() => void) | undefined;
+  /** Opens a turn's conversation; see AgentViewProps. */
+  openConversation?: AgentViewProps["openConversation"];
   settingsHost?: AgentSettingsHost;
   settingsSection?: "identity" | "runtime";
   settingsContent?: ReactNode;
@@ -79,6 +83,8 @@ export function agentSections({
               conversation &&
               initialTranscript && { initialTranscript })}
             {...(role === "activity" && close && { close })}
+            {...(role === "activity" &&
+              openConversation && { openConversation })}
             save={(config) =>
               settingsHost?.pendingSave
                 ? settingsHost.pendingSave(config)

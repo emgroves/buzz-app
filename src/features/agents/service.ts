@@ -271,6 +271,9 @@ export type AgentViewProps<Config = unknown> = {
   initialTranscript?: TranscriptRequest;
   /** Closes the panel showing the tab. */
   close?: () => void;
+  /** Opens a channel, or a thread by its root, in the agent's community;
+   * absent where the host can't open one. */
+  openConversation?: (channelId: string, threadRootId?: string) => void;
   /** Replaces the type's whole config. Spread `agent.config` to change one
    * field, or tabs that each save a part will erase each other's fields. A
    * hosted type's tabs save to its provider instead; for them this rejects. */

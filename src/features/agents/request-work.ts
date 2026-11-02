@@ -15,6 +15,8 @@ export type RequestWork = {
   dismissed?: boolean;
   /** Its harness can stop the turn this local request is in. */
   stoppable?: boolean;
+  /** This local request can be asked again once it fails. */
+  retryable?: boolean;
   selected: ReturnType<typeof requestActivity>;
   turns: Snapshot["turns"];
   working: boolean;
@@ -63,6 +65,7 @@ export function requestWork(
           lifecycle: true,
           ...(chosen.dismissed ? { dismissed: true } : {}),
           ...(chosen.stoppable ? { stoppable: true } : {}),
+          ...(chosen.retryable ? { retryable: true } : {}),
         },
       ];
     }

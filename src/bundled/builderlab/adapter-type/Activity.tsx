@@ -19,11 +19,12 @@ const UNAVAILABLE = "Activity isn't available here.";
 export function createActivityTab(
   relay: RelayData,
 ): ComponentType<AgentViewProps> {
-  return function PublishedActivity({ agent }) {
+  return function PublishedActivity({ agent, openConversation }) {
     const connection = useRelayConnection(relay);
     return (
       <ActivityPanel
         agent={agent}
+        openConversation={openConversation}
         activity={
           connection.status === "ready"
             ? connection.session.agentActivity
@@ -37,13 +38,21 @@ export function createActivityTab(
 export function ActivityPanel({
   agent,
   activity,
+  openConversation,
 }: {
   agent: Agent;
   /** Absent while the owner's session connects. */
   activity: AgentActivity | undefined;
+  openConversation?: AgentViewProps["openConversation"];
 }) {
   if (!activity) return <Note>Activity shows once Buzz is connected.</Note>;
-  return <ActivityFeed agent={agent} activity={activity} />;
+  return (
+    <ActivityFeed
+      agent={agent}
+      activity={activity}
+      openConversation={openConversation}
+    />
+  );
 }
 
 // Hosted frames don't always name their thread, so turns aren't scoped to the
@@ -51,9 +60,11 @@ export function ActivityPanel({
 function ActivityFeed({
   agent,
   activity,
+  openConversation,
 }: {
   agent: Agent;
   activity: AgentActivity;
+  openConversation: AgentViewProps["openConversation"];
 }) {
   // The Agent Activity plugin owns the feed's lease; this only reads it.
   const snapshot = useSyncExternalStore(
@@ -87,6 +98,7 @@ function ActivityFeed({
       agentName={agent.name}
       state={(turnId) => state.get(turnId)}
       follow={false}
+      openConversation={openConversation}
       before={
         <>
           <Note>

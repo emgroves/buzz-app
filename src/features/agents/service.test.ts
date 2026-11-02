@@ -6,7 +6,11 @@ import { appClient } from "../../buzz-mcp/app-client";
 import { callAttentionTool } from "../../buzz-mcp/attention";
 import { callSessionTool } from "../../buzz-mcp/session-tools";
 import { callTool } from "../../buzz-mcp/tools";
-import { createLocalAgentActivity, type WorkOutcome } from "./local-activity";
+import {
+  createLocalAgentActivity,
+  type LocalWork,
+  type WorkOutcome,
+} from "./local-activity";
 import { createHash } from "node:crypto";
 import { Context } from "@deepseek-ai/cordis";
 import { schnorr } from "@noble/curves/secp256k1.js";
@@ -8965,6 +8969,62 @@ it("shows a request whose run failed before handing anything over as failed, wit
       }),
     );
   } finally {
+    await f.ctx.fiber.dispose();
+  }
+});
+
+it("retries a failed request as the same mention, which stays seen and is saved as working only while it runs", async () => {
+  const f = await setup({ resumes: true });
+  await f.service.create({ type: "example/echo", name: "Echo" });
+  const asked = event("1", {
+    tags: [
+      ["h", channel],
+      ["p", bot],
+    ],
+  });
+  let finish!: () => void;
+  f.run.mockRejectedValueOnce(new Error("Provider unavailable"));
+  f.run.mockImplementationOnce(({ workingUntil }) =>
+    workingUntil(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    ),
+  );
+  f.emit({ events: [asked], channelId: channel });
+  try {
+    await vi.waitFor(() =>
+      expect(f.activity.reader.work()[0]).toMatchObject({
+        state: "error",
+        retryable: true,
+      }),
+    );
+    expect(readInterrupted(f.storage)).toEqual({});
+    f.activity.reader.retry?.(f.activity.reader.work()[0] as LocalWork);
+    expect(f.activity.reader.work()).toEqual([
+      expect.objectContaining({ messageId: asked.id, state: "waiting" }),
+    ]);
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalledTimes(2));
+    expect(f.run.mock.calls[1]?.[0]).toMatchObject({
+      trigger: { type: "mention", event: asked },
+      channelId: channel,
+    });
+    expect(f.run.mock.calls[1]?.[0].trigger).not.toHaveProperty("resumed");
+    expect(f.activity.reader.work()[0]?.state).toBe("working");
+    expect(readInterrupted(f.storage)).toEqual({
+      [bot]: { [asked.id]: channel },
+    });
+    // Still seen: heard again, it is not given a third time.
+    f.emit({ events: [asked], channelId: channel });
+    await settle();
+    expect(f.run).toHaveBeenCalledTimes(2);
+    finish();
+    await vi.waitFor(() =>
+      expect(f.activity.reader.work()[0]?.state).toBe("done"),
+    );
+    expect(readInterrupted(f.storage)).toEqual({});
+  } finally {
+    finish?.();
     await f.ctx.fiber.dispose();
   }
 });

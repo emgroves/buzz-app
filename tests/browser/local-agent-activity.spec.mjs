@@ -127,6 +127,11 @@ test("local agent receipt, work and failure agree across sidebar, thread and exa
         .getByRole("button", { name: /^Dismiss error from / })
         .boundingBox();
       expect(dismiss.x + dismiss.width).toBeLessThanOrEqual(box.x + box.width);
+      const retry = await popup
+        .getByRole("button", { name: /^Retry / })
+        .boundingBox();
+      expect(retry.x).toBeGreaterThanOrEqual(box.x);
+      expect(retry.x + retry.width).toBeLessThanOrEqual(dismiss.x);
       await page.screenshot({
         path: testInfo.outputPath(`local-activity-${colorScheme}-${width}.png`),
       });
@@ -135,6 +140,27 @@ test("local agent receipt, work and failure agree across sidebar, thread and exa
       await expect(waiting).toBeFocused();
     }
   }
+  // Retry asks the agent again with the same message; focus returns to the row.
+  await waiting.focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Retry Local tester" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(waiting).toBeFocused();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          window.localAgentFixture.pending().filter((row) => row === id).length,
+        second.id,
+      ),
+    )
+    .toBe(2);
+  await expect(waiting).toHaveAccessibleName(/Local tester, Starting/);
+  await page.evaluate(
+    (id) => window.localAgentFixture.finish(id, false),
+    second.id,
+  );
+  await expect(waiting).toContainText("1 failed");
   // Dismiss hides only this device's view of the error; focus stays in the row.
   await waiting.focus();
   await page.keyboard.press("Enter");
@@ -701,5 +727,25 @@ test("the published-activity tab shows turns its agent published", async ({
   ).toBeVisible();
   await expect(
     page.getByText("Published reply", { exact: true }),
+  ).toBeVisible();
+  // A turn's thread label opens that thread.
+  const root = app.histories
+    .get("primary/alpha")
+    .find((row) => row.content.startsWith("Thread root"));
+  app.observer(
+    {
+      ...frame("turn_started", { threadRootEventId: root.id }),
+      sessionId: "T",
+      turnId: "threaded",
+    },
+    key,
+  );
+  await page
+    .getByRole("button", { name: `Thread ${root.id.slice(0, 8)}`, exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "Thread", exact: true })
+      .getByRole("textbox", { name: "Reply to thread", exact: true }),
   ).toBeVisible();
 });

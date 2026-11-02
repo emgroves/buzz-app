@@ -54,7 +54,11 @@ import { PreferenceRow } from "../../shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
 import { AgentDelete } from "../../features/agents/AgentManage";
 import { useAgent, useChannelChoices } from "../../features/agents/react";
-import type { Agents, TranscriptRequest } from "../../features/agents/service";
+import type {
+  Agents,
+  AgentViewProps,
+  TranscriptRequest,
+} from "../../features/agents/service";
 import type { CommunityReader } from "../../features/communities/service";
 import { agentSections } from "../../features/agents/tabs";
 import { useAgentSettingsHost } from "../agents/AgentSettingsHost";
@@ -63,6 +67,19 @@ import { writeClipboardText } from "../../shared/clipboard";
 
 const noSubscribe = () => () => {};
 const emptyAgentTypes = Object.freeze([]);
+/** This session's community, which targets opened from the panel stay in. */
+function panelCommunity(scope: string | undefined, viewer: string | undefined) {
+  if (!scope || !viewer || !scope.endsWith(`:${viewer}`)) return undefined;
+  try {
+    return {
+      viewer,
+      communityOrigin: relayOrigin(scope.slice(0, -(viewer.length + 1))),
+    };
+  } catch {
+    // This session has no usable navigation scope.
+    return undefined;
+  }
+}
 
 export function ProfilePanel({
   relay,
@@ -115,6 +132,19 @@ export function ProfilePanel({
   if (!pubkey) return <p>Unsupported profile.</p>;
   if (connection.status !== "ready")
     return <p>Connect to a community to view this profile.</p>;
+  const community = panelCommunity(connection.scope, connection.viewer);
+  // An agent's activity opens a turn's conversation in this community.
+  const openConversation: AgentViewProps["openConversation"] =
+    navigation && community
+      ? (channelId, threadRootId) =>
+          void navigation.open({
+            version: 1,
+            kind: "conversation",
+            scope: community,
+            channelId,
+            ...(threadRootId ? { messageId: threadRootId, threadRootId } : {}),
+          })
+      : undefined;
   if (
     agents &&
     owned &&
@@ -134,6 +164,7 @@ export function ProfilePanel({
         session={connection.session}
         navigation={navigation}
         context={context}
+        openConversation={openConversation}
         close={close}
       />
     );
@@ -151,6 +182,7 @@ export function ProfilePanel({
       communities={communities}
       scope={connection.scope}
       viewer={connection.viewer}
+      openConversation={openConversation}
       close={close}
     />
   );
@@ -165,6 +197,7 @@ function OwnedAgentProfile({
   session,
   navigation,
   context,
+  openConversation,
   close,
 }: {
   agents: Agents;
@@ -176,6 +209,7 @@ function OwnedAgentProfile({
   session: RelaySession;
   navigation: Navigation | undefined;
   context: PanelProps["context"];
+  openConversation: AgentViewProps["openConversation"];
   close(): void;
 }) {
   const { types } = useAgents(agents);
@@ -195,6 +229,7 @@ function OwnedAgentProfile({
       initialActivity={initialActivity}
       initialTranscript={initialTranscript}
       close={close}
+      openConversation={openConversation}
       conversation={
         context && {
           channelId: context.channelId,
@@ -226,6 +261,7 @@ function ProfileDetails({
   communities,
   scope,
   viewer,
+  openConversation,
   close,
 }: {
   agents: Agents | undefined;
@@ -239,6 +275,7 @@ function ProfileDetails({
   navigation: Navigation | undefined;
   scope: string | undefined;
   viewer: string | undefined;
+  openConversation: AgentViewProps["openConversation"];
   close(): void;
 }) {
   const selection = useMemo(
@@ -296,6 +333,7 @@ function ProfileDetails({
           },
           initialTranscript,
           close,
+          ...(openConversation && { openConversation }),
           ...(settings.settingsHost
             ? { settingsHost: settings.settingsHost }
             : {}),
@@ -350,14 +388,8 @@ function ProfileDetails({
   const verifiedOwner = ownership.owner;
   const selectedTab =
     requestedTab.startsWith("agent:") && !section ? "info" : requestedTab;
-  let communityOrigin: string | undefined;
-  if (scope && viewer && scope.endsWith(`:${viewer}`)) {
-    try {
-      communityOrigin = relayOrigin(scope.slice(0, -(viewer.length + 1)));
-    } catch {
-      // This session has no usable navigation scope.
-    }
-  }
+  const community = panelCommunity(scope, viewer);
+  const communityOrigin = community?.communityOrigin;
   const npub = profileTarget(pubkey)?.slice(6) ?? pubkey;
   const identityName = useChannelIdentityNames(session, context?.channelId);
   const name = identityName(
@@ -383,9 +415,7 @@ function ProfileDetails({
   usePanelTabTitle(name, tabAvatar);
   // Targets opened from this panel stay in its community.
   const scoped =
-    navigation && viewer && communityOrigin
-      ? { navigation, scope: { viewer, communityOrigin } }
-      : undefined;
+    navigation && community ? { navigation, scope: community } : undefined;
   const {
     available: canMessage,
     opening: openingMessage,

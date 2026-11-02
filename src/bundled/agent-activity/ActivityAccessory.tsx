@@ -123,6 +123,7 @@ export function ActivityAccessory(props: ActivityProps) {
       reason: entry.reason,
       ...(entry.step ? { step: entry.step } : {}),
       ...(entry.stoppable ? { stoppable: true } : {}),
+      ...(entry.retryable ? { retryable: true } : {}),
       lifecycle: entry.lifecycle,
       records: entry.selected.records,
       turns: entry.turns,
@@ -240,6 +241,7 @@ type Entry = {
   reason: string | undefined;
   step?: WorkStep;
   stoppable?: boolean;
+  retryable?: boolean;
   lifecycle: boolean;
   records: ReturnType<typeof activityRecords>;
   turns: readonly ActivityTurn[];
@@ -327,6 +329,23 @@ function ActivityBubble({
         );
       },
     );
+  };
+  // A retried request begins again; its popup closes on the new row.
+  const retry = (entry: Entry) => {
+    if (!message) return;
+    try {
+      props.session.agentActivity.retry(
+        entry.agent,
+        props.channelId,
+        message.id,
+      );
+      setExpanded(false);
+    } catch (error) {
+      notify(
+        `Couldn’t retry ${entry.name}. ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    }
   };
   // A stop is forgotten once its agent's work here has ended.
   const live = entries
@@ -553,6 +572,19 @@ function ActivityBubble({
                   />
                   {entry.lifecycle && entry.state === "error" ? (
                     <span className={styles.action}>
+                      {entry.retryable && (
+                        <Button
+                          size="sm"
+                          variant="subtle"
+                          aria-label={`Retry ${entry.name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            retry(entry);
+                          }}
+                        >
+                          Retry
+                        </Button>
+                      )}
                       <IconButton
                         size="sm"
                         variant="ghost"

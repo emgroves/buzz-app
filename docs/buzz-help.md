@@ -95,8 +95,12 @@ the interface unless an available tool actually supports that action.
   offer installation, sign-in, and default-model controls. Available controls
   depend on the type. Do not assume a provider is configured or signed in.
 - **Activity**, where the agent type provides it, shows sessions and their
-  transcripts in the agent's profile. Working indicators describe current work,
+  transcripts in the agent's profile. A turn's **Thread** or **Channel** label
+  opens that conversation. Working indicators describe current work,
   not a guarantee that an agent is available or that a message was delivered.
+- When a request to an agent running on this device fails, the activity under
+  the message offers **Retry**, which asks the agent again, and **Dismiss**,
+  which hides the failure.
 
 ## Optional features and limits
 

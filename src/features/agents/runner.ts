@@ -2148,13 +2148,22 @@ export class AgentRunners {
     const channelId =
       job.channelId ?? event.tags.find(([key]) => key === "h")?.[1];
     if (!scope || !channelId) return;
-    job.work = this.host.activity.begin({
-      scope,
-      agent: runner.member.pubkey,
-      channelId,
-      messageId: event.id,
-      threadRootId: threadReference(event)?.rootId ?? event.id,
-    });
+    job.work = this.host.activity.begin(
+      {
+        scope,
+        agent: runner.member.pubkey,
+        channelId,
+        messageId: event.id,
+        threadRootId: threadReference(event)?.rootId ?? event.id,
+      },
+      // Retry queues the same mention again. It was seen when first heard,
+      // so it is not marked again; its run saves it as working as any does.
+      () =>
+        void this.enqueue(runner, {
+          trigger: { type: "mention", event },
+          ...(job.channelId ? { channelId: job.channelId } : {}),
+        }),
+    );
   }
 
   // Mentions run one at a time, in arrival order. Beside them, attention work

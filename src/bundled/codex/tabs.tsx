@@ -728,9 +728,11 @@ export function createTabs(
   function TranscriptView({
     agent,
     conversation,
+    openConversation,
   }: {
     agent: AgentViewProps<Config>["agent"];
     conversation: SavedConversation;
+    openConversation: AgentViewProps<Config>["openConversation"];
   }) {
     const [read, setRead] = useState<Read>();
     const [loading, setLoading] = useState(true);
@@ -796,6 +798,7 @@ export function createTabs(
           <ActivityTranscript
             transcript={read.transcript}
             agentName={agent.name}
+            openConversation={openConversation}
             state={() => (read.transcript.working ? "working" : undefined)}
             before={
               read.transcript.more && (
@@ -817,11 +820,13 @@ export function createTabs(
     conversation,
     initialTranscript,
     close,
+    openConversation,
   }: {
     agent: AgentViewProps<Config>["agent"];
     conversation?: AgentViewProps<Config>["conversation"];
     initialTranscript?: AgentViewProps<Config>["initialTranscript"];
     close?: AgentViewProps<Config>["close"];
+    openConversation?: AgentViewProps<Config>["openConversation"];
   }) {
     const sessions = useSyncExternalStore(runtime.subscribe, () =>
       runtime.sessions(agent.key),
@@ -946,7 +951,12 @@ export function createTabs(
             backLabel="Back to profile"
             onBack={back}
           >
-            <TranscriptView key={open.key} agent={agent} conversation={open} />
+            <TranscriptView
+              key={open.key}
+              agent={agent}
+              conversation={open}
+              openConversation={openConversation}
+            />
           </PanelSubview>
         )}
       </div>

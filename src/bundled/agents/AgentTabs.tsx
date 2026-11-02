@@ -5,6 +5,7 @@ import type {
   AgentConversation,
   AgentSettingsHost,
   Agents,
+  AgentViewProps,
   RegisteredAgentType,
   TranscriptRequest,
 } from "../../features/agents/service";
@@ -30,6 +31,7 @@ export function AgentTabs(props: {
   initialActivity?: boolean | undefined;
   initialTranscript?: TranscriptRequest | undefined;
   close?: (() => void) | undefined;
+  openConversation?: AgentViewProps["openConversation"];
   onDiscard?: () => void;
 }) {
   const split = props.type?.tabs?.some(
