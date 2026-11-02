@@ -1789,11 +1789,18 @@ Plugins can render the host-provided [`browser.View` component](browser.md) insi
 While the bundled GitHub plugin is on, it provides `ctx.githubPulls`: the pull
 request states the app already holds, read-only. Links in messages, the panel
 and agents' watches read pull requests; `ctx.githubPulls` never reads GitHub, so
-using it costs nothing against GitHub's limits. `pullState(url)` gives
-`"open"`, `"draft"`, `"merged"` or `"closed"`, or undefined when the app holds
-no state for it (not read, could not be read, or forgotten after nobody showed
-it for a while). `subscribe(listener)` calls back after a read records a changed state; a
-state the app forgets is not announced.
+using it costs nothing against GitHub's limits.
+
+`prState(url, { details })` gives what the agent tool `github_pr_state` gives,
+built by the same code: `state` (`"open"`, `"draft"`, `"merged"` or
+`"closed"`), with a `gh` read also `checks`, `failed`, `settled`, `conflicts`
+and `head`, then `read_at`, `age_seconds`, `source` and, when reading it again
+failed, `last_read_failed`. With `details: true` it adds the panel's `details`
+once something read them. Where the tool would read GitHub, `prState` gives
+undefined instead: the app holds no state for it (not read, could not be read,
+or forgotten after nobody showed it for a while), or `url` is not a pull
+request's. `subscribe(listener)` calls back after a read records a changed
+state; a state the app forgets is not announced.
 The service goes away when the GitHub plugin is turned off, so take it with
 `ctx.inject(["githubPulls"], (child) => …)` rather than a top-level `inject`, which
 would keep the plugin from starting without it.
