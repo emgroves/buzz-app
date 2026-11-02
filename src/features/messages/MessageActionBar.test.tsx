@@ -225,6 +225,8 @@ it("keeps actions under the row's own open preview card until it closes", async 
   const row = screen.getByTestId("message");
   const link = screen.getByRole("link", { name: "Linked message" });
   const card = screen.getByText("Preview body");
+  // An open card keeps only actions that are already shown.
+  expect(row.hasAttribute("data-actions-revealed")).toBe(false);
   fireEvent.pointerEnter(row);
   fireEvent.pointerOver(link);
   expect(row.hasAttribute("data-actions-revealed")).toBe(true);
@@ -233,20 +235,25 @@ it("keeps actions under the row's own open preview card until it closes", async 
   expect(row.hasAttribute("data-actions-revealed")).toBe(true);
   fireEvent.pointerOver(link, { relatedTarget: card });
   expect(row.hasAttribute("data-actions-revealed")).toBe(true);
-  // Back on the row's empty space, the card no longer holds the actions.
-  fireEvent.pointerOut(link, { relatedTarget: card });
-  fireEvent.pointerOver(row, { relatedTarget: card });
-  expect(row.hasAttribute("data-actions-revealed")).toBe(false);
+  // Off the bubble's edge and back while the card is open: hiding here would
+  // show the actions again above the card.
+  fireEvent.pointerOut(link, { relatedTarget: row });
+  fireEvent.pointerOver(row, { relatedTarget: link });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(true);
+  fireEvent.pointerOut(row, { relatedTarget: link });
   fireEvent.pointerOver(link, { relatedTarget: row });
   fireEvent.pointerOut(link, { relatedTarget: card });
   expect(row.hasAttribute("data-actions-revealed")).toBe(true);
   // The row never hears the pointer leave the portaled card; its close ends it.
   await act(async () => view.rerender(<PreviewRow open={false} />));
   expect(row.hasAttribute("data-actions-revealed")).toBe(false);
-  // A closing card is no longer the row's: entering it leaves the row.
+  // A closed card holds nothing: the row's empty space hides the actions.
   fireEvent.pointerOver(link, { relatedTarget: row });
   expect(row.hasAttribute("data-actions-revealed")).toBe(true);
-  fireEvent.pointerOut(link, { relatedTarget: card });
+  fireEvent.pointerOut(link, { relatedTarget: row });
+  fireEvent.pointerOver(row, { relatedTarget: link });
+  expect(row.hasAttribute("data-actions-revealed")).toBe(false);
+  await act(async () => view.rerender(<PreviewRow open />));
   expect(row.hasAttribute("data-actions-revealed")).toBe(false);
 });
 

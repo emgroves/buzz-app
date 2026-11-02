@@ -36,18 +36,6 @@ export type PreviewCardProps = {
 const focusableActions =
   "button:not(:disabled), a[href], [tabindex]:not([tabindex='-1'])";
 
-// The portal leaves no DOM path from a card back to the trigger that owns it.
-const owners = new WeakMap<Element, RefObject<HTMLAnchorElement | null>>();
-
-/** The trigger of the mounted preview card that contains `target`, if any. */
-export function previewCardTrigger(target: EventTarget | null) {
-  const positioner =
-    target instanceof Element
-      ? target.closest(".buzz-preview-card-positioner")
-      : null;
-  return (positioner && owners.get(positioner)?.current) ?? null;
-}
-
 /** Whether a point lies on one of the element's line boxes, 1px inside. */
 function isOver(element: Element, x: number, y: number) {
   for (const box of element.getClientRects()) {
@@ -110,7 +98,6 @@ export function PreviewCard({
       else positioner.showPopover?.();
     };
     update();
-    owners.set(positioner, triggerRef);
     const stopObserving = observeOverlays(update);
     // Hover cannot see its trigger scroll away from a still pointer: the
     // preview would stay open, follow the trigger out of its scroller and
@@ -169,7 +156,6 @@ export function PreviewCard({
     });
     return () => {
       stopObserving();
-      owners.delete(positioner);
       heldLeave.current = false;
       pointer.current = null;
       document.removeEventListener("scroll", closeOnScroll, true);
@@ -256,6 +242,9 @@ export function PreviewCard({
         {...hoverOpenTiming.preview}
         {...(warm && { delay: 0 })}
         ref={rememberTrigger}
+        // Base UI marks every open popup's trigger data-popup-open; this tells
+        // a preview's trigger apart.
+        data-preview-card-trigger=""
         onMouseEnter={() => {
           heldLeave.current = false;
         }}
