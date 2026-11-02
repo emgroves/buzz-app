@@ -2716,9 +2716,10 @@ export function createChannelStore(
               state.pending.delete(id);
               state.retryAt.set(id, now() + wait);
             }
+            // Arm the retry first, so a throwing listener can't skip it.
+            wakeReferences();
             // Its links stop waiting through the backoff.
             notify(listListeners);
-            wakeReferences();
           },
         );
       }

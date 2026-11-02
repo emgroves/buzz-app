@@ -68,8 +68,16 @@ function setup(
     channels: [{ id: "channel", name: "General" }],
   };
   let described = reference;
-  const refer = vi.fn(() => () => {});
   const listListeners = new Set<() => void>();
+  // As in the store, a demanded lookup is on the way at once, and its batch
+  // tells list subscribers from a microtask.
+  const refer = vi.fn(() => {
+    described = { state: "looking" };
+    queueMicrotask(() => {
+      for (const listener of listListeners) listener();
+    });
+    return () => {};
+  });
   const session = {
     thread,
     profiles: {
@@ -241,6 +249,28 @@ it("waits while the channel list loads, and trusts a refused read once it errors
   expect(h.tree.textContent).toContain("Open link");
   expect(h.refer).not.toHaveBeenCalled();
   expect(h.thread).toHaveBeenCalledOnce();
+});
+it("waits for the lookup a ready list starts, then reads again", async () => {
+  const h = setup(
+    [purged, base],
+    root.id,
+    undefined,
+    { state: "unknown" },
+    "loading",
+  );
+  expect(text(h.tree)).toBe("Loading message…");
+  // The ready list demands the lookup, and its batch says it is on the way.
+  await act(async () => h.answer({ state: "unknown" }, "ready"));
+  expect(text(h.tree)).toBe("Loading message…");
+  expect(h.refer).toHaveBeenCalledOnce();
+  expect(h.thread).toHaveBeenCalledOnce();
+  h.answer(open);
+  expect(h.thread).toHaveBeenCalledTimes(2);
+  expect(h.views[0]?.view.dispose).toHaveBeenCalledOnce();
+  expect(h.views[1]?.view.refresh).toHaveBeenCalledOnce();
+  expect(text(h.tree)).toBe("Loading message…");
+  h.views[1]?.publish({ ...base, status: "ready", root });
+  expect(h.tree.textContent).toContain("reconciled body");
 });
 it("keeps loading while a read is genuinely in flight", () => {
   const loading = setup({
