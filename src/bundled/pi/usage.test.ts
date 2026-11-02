@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { expect, it, vi } from "vitest";
+import { turnPrompt } from "../claude-code/prompt";
 import type { PiEntry } from "./transcript";
 import { conversationUsage, readUsage } from "./usage";
 
@@ -11,6 +12,31 @@ const ask = (id: number, text: string): PiEntry => ({
     {
       role: "user",
       content: `<context>\nChannel: general (#chan)\n</context>\n\n<buzz-event type="@mention">\nFrom: Sal (npub1x)\nContent: ${text}\nTags: []\n</buzz-event>`,
+      timestamp: id * 1000,
+    },
+  ],
+});
+const record = (id: number, text: string): PiEntry => ({
+  id,
+  kind: "pi.user",
+  model: [
+    {
+      role: "user",
+      content: turnPrompt({
+        agent: "c".repeat(64),
+        event: {
+          id: "1".repeat(64),
+          pubkey: "a".repeat(64),
+          kind: 9,
+          created_at: id,
+          content: text,
+          tags: [["h", "chan"]],
+        },
+        channel: { id: "chan", name: "general" },
+        scope: "thread",
+        context: [],
+        total: 1,
+      }),
       timestamp: id * 1000,
     },
   ],
@@ -85,6 +111,12 @@ it("reports each answer's tokens and cost, where and what was asked", () => {
       },
     ],
   });
+});
+
+it("titles a conversation whose prompt is sent as exact records", () => {
+  expect(
+    conversationUsage([record(1, "fix the build\nand lint")], PLACE)?.title,
+  ).toBe("fix the build");
 });
 
 it("leaves out counts pi-ai did not record, and a conversation with no messages", () => {

@@ -2,9 +2,11 @@
 // storage through the host and shown in the host's turn-transcript model. Pi
 // owns the entries; nothing here writes or keeps them.
 import { isMessageTool } from "../../buzz-mcp/session-tools";
+import { readEventBody } from "../../features/agent-harness/turn-records";
 import {
   promptMessage,
   promptSections,
+  STEER,
   type ToolItem,
   type Transcript,
   type TranscriptItem,
@@ -15,7 +17,6 @@ import type { Pi } from "./pi";
 /** The latest turns shown; Pi's storage keeps the rest. */
 export const TURN_LIMIT = 50;
 const PREFIX = "buzz_";
-const STEER = "new-message-arrived-while-you-were-working";
 const KINDS: Record<string, string> = {
   read: "read",
   write: "edit",
@@ -75,12 +76,21 @@ const text = (content: Message["content"]) =>
         .filter(Boolean)
         .join("\n");
 const str = (value: unknown) => (typeof value === "string" ? value : "");
-/** A Buzz prompt, or a steer wrapping one, as the turn's opening item. */
-function prompt(id: string, at: number, raw: string): TranscriptItem {
+/** A person's display name, if known. */
+type Names = (pubkey: string) => string | undefined;
+/** A Buzz prompt, or a steer, as the turn's opening item. */
+function prompt(
+  id: string,
+  at: number,
+  raw: string,
+  name?: Names,
+): TranscriptItem {
   let sections = promptSections(raw);
   const steer = sections.find((section) => section.tag === STEER);
-  if (steer) sections = promptSections(steer.body);
-  const { text, author } = promptMessage(sections);
+  // An older steer wraps a whole turn.
+  if (steer && !readEventBody(steer.body))
+    sections = promptSections(steer.body);
+  const { text, author } = promptMessage(sections, name);
   return {
     id,
     at,
@@ -103,6 +113,7 @@ export function piTurns(
   entries: readonly PiEntry[],
   conversation: Conversation,
   working: boolean,
+  name?: Names,
 ): TranscriptTurn[] {
   const turns: TranscriptTurn[] = [];
   const tools = new Map<string, ToolItem>();
@@ -138,7 +149,7 @@ export function piTurns(
       const at = message.timestamp ?? last;
       if (entry.kind === "pi.user" && message.role === "user") {
         aborted = undefined;
-        const item = prompt(id, at, text(message.content));
+        const item = prompt(id, at, text(message.content), name);
         const current =
           item.type === "prompt" && item.steer ? turns.at(-1) : undefined;
         (current ?? turn(id, at, false)).items.push(item);
@@ -269,6 +280,7 @@ export async function readTranscript(
   conversation: Conversation,
   working: boolean,
   signal: AbortSignal,
+  name?: Names,
 ): Promise<PiTranscript> {
   const entries: PiEntry[] = [];
   let turns = 0;
@@ -288,7 +300,7 @@ export async function readTranscript(
     cursor = page.next;
     // One more than shown, so the oldest shown turn starts with its prompt.
   } while (cursor && turns <= TURN_LIMIT);
-  const all = piTurns(entries.reverse(), conversation, working);
+  const all = piTurns(entries.reverse(), conversation, working, name);
   return {
     turns: all.slice(-TURN_LIMIT),
     more: all.length > TURN_LIMIT,

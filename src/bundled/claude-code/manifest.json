@@ -54,7 +54,9 @@
           "-e",
           "Thread root: [0-9a-f]{64}",
           "-e",
-          "Agent: [0-9a-f]{64}(@[A-Za-z0-9._~%-]+)?"
+          "Agent: [0-9a-f]{64}(@[A-Za-z0-9._~%-]+)?",
+          "-e",
+          "</?(thread|conversation)-context>"
         ]
       },
       {

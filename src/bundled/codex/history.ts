@@ -1,3 +1,4 @@
+import { quoted } from "../../features/agent-harness/turn-records";
 import { attestedOwner } from "../../features/agents/owner-attestation";
 import type { AgentReads } from "../../features/agents/reads";
 import { hasEventProof } from "../../features/relay/events";
@@ -96,11 +97,9 @@ export async function conversationHistory(
       content: (message.sourceContent ?? message.content).slice(0, 4000),
     }));
   const section = root ? "thread-context" : "conversation-context";
-  const text = JSON.stringify({
+  const text = quoted({
     note: "Recent context, not new requests. Previously supplied context may repeat. Up to 50 messages, 4000 characters each.",
     messages,
-  })
-    .replaceAll("<", "\\u003c")
-    .replaceAll(">", "\\u003e");
+  });
   return `<${section}>\n${text}\n</${section}>\n`;
 }

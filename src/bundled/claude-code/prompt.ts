@@ -1,6 +1,5 @@
 // Prompts in the harness's format (buzz-acp), so a Claude agent here reads the
 // same sections and follows the same base prompt as a harness agent.
-import { npubEncode } from "nostr-tools/nip19";
 import {
   BUZZ_PROMPT,
   TOP_LEVEL_PROMPT,
@@ -13,12 +12,15 @@ import {
   type ConversationWake,
   wakeSection,
 } from "../../features/agent-harness/plugin-wake";
+import { eventBody, quoted } from "../../features/agent-harness/turn-records";
 import channelModel from "./session_model_channel.md?raw";
 import threadModel from "./session_model_thread.md?raw";
 
 export type Scope = "thread" | "channel";
 /** Messages of thread context shown with a turn, newest kept. */
 export const CONTEXT_LIMIT = 12;
+/** Characters of each context message shown. */
+const CONTENT_LIMIT = 4000;
 
 const section = (tag: string, body: string, attributes = "") =>
   `<${tag}${attributes}>\n${body.trim()}\n</${tag}>`;
@@ -81,25 +83,17 @@ export type TurnInput = Readonly<{
   /** Messages of the conversation the session has not been shown: earlier
    * ones, and for a resumed turn also those after it. */
   context: readonly EventData[];
-  /** Messages the conversation has in all, for `total=`. */
+  /** Messages the conversation has in all. */
   total: number;
-  /** What started the turn, such as "@mention". */
-  label: string;
-  /** A display name for a pubkey, if known. */
-  name(pubkey: string): string | undefined;
   /** The chat's workspace Canvas section, for a Solo chat with one. */
   project?: string;
   /** A plugin's wake, whose turn has its section in place of the event's. */
   wake?: ConversationWake;
 }>;
 
-const time = (seconds: number) => new Date(seconds * 1000).toISOString();
-const actor = (pubkey: string, name: TurnInput["name"]) => {
-  const label = name(pubkey);
-  return label ? `${label} (${pubkey})` : pubkey;
-};
-
-/** One turn: routing context, unseen thread context, then the event. */
+/** One turn: unseen thread context, routing context, then the event. Each
+ * message is an exact record, as Codex sends it, so a protection plugin can
+ * check each one on its own. */
 export function turnPrompt(input: TurnInput) {
   const { event, channel, thread } = input;
   const channelLabel = channel.name
@@ -152,61 +146,55 @@ export function turnPrompt(input: TurnInput) {
           "Session scope: channel",
           `Channel: ${channelLabel}`,
         ];
-  const parts = [
-    section(
-      "context",
-      [...lines, `Agent: ${input.agent}`, hint, reply].join("\n"),
-    ),
-  ];
-  if (input.project) parts.push(input.project);
+  const parts: string[] = [];
+  // First, where the plugin looks for it.
   if (context.length)
     parts.push(
       section(
         (channel.dm && !thread) || input.topLevel
           ? "conversation-context"
           : "thread-context",
-        context
-          .map(
-            (message, index) =>
-              `[${index + 1}] ${actor(message.pubkey, input.name)} (${time(message.created_at)}): ${message.content}`,
-          )
-          .join("\n"),
-        ` included="${context.length}" total="${input.total}" truncated="${context.length < input.context.length}"`,
+        quoted({
+          note: `Messages not yet shown in this session, not new requests: the latest ${CONTEXT_LIMIT} at most, ${CONTENT_LIMIT} characters each.`,
+          total: input.total,
+          truncated: context.length < input.context.length,
+          messages: context.map((message) => ({
+            id: message.id,
+            pubkey: message.pubkey,
+            created_at: message.created_at,
+            content: message.content.slice(0, CONTENT_LIMIT),
+          })),
+        }),
       ),
     );
   parts.push(
+    section(
+      "context",
+      [...lines, `Agent: ${input.agent}`, hint, reply].join("\n"),
+    ),
+  );
+  if (input.project) parts.push(input.project);
+  parts.push(
     input.wake
       ? wakeSection(input.wake)
-      : section("buzz-event", eventBlock(input), ` type="${input.label}"`),
+      : section(EVENT, eventBody(event, event.content)),
   );
   return parts.join("\n\n");
 }
 
-function eventBlock({ event, channel, thread, name }: TurnInput) {
-  const npub = npubEncode(event.pubkey);
-  const label = name(event.pubkey);
-  const mentions = event.tags
-    .filter((tag) => tag[0] === "p" && tag[1])
-    .map((tag) => actor(tag[1] as string, name));
-  const parsed = [
-    ...(thread && thread.parentId !== thread.rootId
-      ? [`parent=${thread.parentId}`]
-      : []),
-    ...(thread ? [`root=${thread.rootId}`] : []),
-    ...(mentions.length ? [`mentions=[${mentions.join(", ")}]`] : []),
-  ];
-  return [
-    `Event ID: ${event.id}`,
-    `Channel: ${channel.name ? `${channel.name} (#${channel.id})` : channel.id}`,
-    `Kind: ${event.kind}`,
-    `From: ${label ? `${label} (npub: ${npub}, hex: ${event.pubkey})` : `${npub} (hex: ${event.pubkey})`}`,
-    `Time: ${time(event.created_at)}`,
-    `Content: ${event.content}`,
-    `Tags: ${JSON.stringify(event.tags)}`,
-    ...(parsed.length ? [`Parsed: ${parsed.join(", ")}`] : []),
-  ].join("\n");
+const EVENT = "buzz-event";
+const STEER = "new-message-arrived-while-you-were-working";
+/** A turn for a session that is still working on an earlier one. Its event's
+ * section becomes the steer's, so the event stays a record of its own; a
+ * turn without exactly one, such as a wake's, is wrapped whole. */
+export function steerPrompt(turn: string) {
+  const open = `\n<${EVENT}>\n`;
+  const close = `\n</${EVENT}>`;
+  const once = (text: string) =>
+    turn.includes(text) && turn.indexOf(text) === turn.lastIndexOf(text);
+  const steered =
+    once(open) && once(close)
+      ? turn.replace(open, `\n<${STEER}>\n`).replace(close, `\n</${STEER}>`)
+      : section(STEER, turn);
+  return `${steered}\n\nNote: A new message arrived while you were working. Continue your in-progress work and incorporate the new message if it's relevant; if it's unrelated, you may briefly acknowledge it and carry on.`;
 }
-
-/** A turn for a session that is still working on an earlier one. */
-export const steerPrompt = (turn: string) =>
-  `${section("new-message-arrived-while-you-were-working", turn)}\n\nNote: A new message arrived while you were working. Continue your in-progress work and incorporate the new message if it's relevant; if it's unrelated, you may briefly acknowledge it and carry on.`;

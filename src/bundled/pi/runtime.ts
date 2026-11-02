@@ -415,7 +415,9 @@ export class PiRuntime {
     working: boolean,
     signal: AbortSignal,
   ) {
-    return readTranscript(this.pi, agent, place, working, signal);
+    return readTranscript(this.pi, agent, place, working, signal, (pubkey) =>
+      this.reads(agent)?.name(pubkey),
+    );
   }
   subscribe(listener: () => void) {
     this.listeners.add(listener);
@@ -597,7 +599,6 @@ export class PiRuntime {
               solo,
             )),
             agent: agent.key,
-            label: "@mention",
             channelLevel: topLevel && !solo,
             ...(wake
               ? { wake: { ...wake, text: (await wakeText?.()) ?? wake.text } }
@@ -1285,21 +1286,6 @@ export class PiRuntime {
       (item) =>
         item.created_at > seen && (!seen || item.pubkey !== agent.pubkey),
     );
-    const pubkeys = [
-      ...new Set([
-        event.pubkey,
-        ...unseen.map((item) => item.pubkey),
-        ...event.tags
-          .filter((tag) => tag[0] === "p")
-          .map((tag) => tag[1] ?? ""),
-      ]),
-    ].filter(Boolean);
-    if (reads)
-      await Promise.race([
-        reads.profiles(pubkeys).catch(() => undefined),
-        new Promise((resolve) => setTimeout(resolve, NAMES_TIMEOUT_MS)),
-      ]);
-    const members = summary?.members ?? [];
     const project = (await reading)?.section;
     return {
       event,
@@ -1313,7 +1299,6 @@ export class PiRuntime {
       ...(thread ? { thread } : {}),
       context: unseen,
       total: earlier.length + 1,
-      name: (pubkey: string) => reads?.name(pubkey, members),
       ...(project ? { project } : {}),
     };
   }

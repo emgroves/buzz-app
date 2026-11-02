@@ -1,5 +1,7 @@
 /** Owner-only display projection of observer telemetry into turns and items.
  * Raw session retention is unchanged; this reads allowlisted ACP fields only. */
+import { readEventBody } from "../agent-harness/turn-records";
+
 type Source = Readonly<{
   id: string;
   agent: string;
@@ -92,6 +94,10 @@ const PROMPT_METHODS = new Set([
   "_goose/unstable/session/steer",
 ]);
 
+/** A steer's section holds its event, or before exact records, a whole turn. */
+export const STEER = "new-message-arrived-while-you-were-working";
+const EVENT_TAGS = new Set(["buzz-event", STEER]);
+
 /** Split top-level `<tag attrs>` … `</tag>` prompt framing; other text is kept. */
 export function promptSections(text: string): PromptSection[] {
   const sections: PromptSection[] = [];
@@ -116,14 +122,23 @@ export function promptSections(text: string): PromptSection[] {
   return sections;
 }
 
-/** The triggering Buzz event(s): author label and content, without tags. */
-export function promptMessage(sections: PromptSection[]) {
-  const events = sections.filter(
-    (section) => section.tag === "buzz-event" || section.tag === "buzz-events",
-  );
+/** The triggering Buzz event(s): author label and content, without tags.
+ * An event sent as an exact record names its author by `name`, if known. */
+export function promptMessage(
+  sections: PromptSection[],
+  name: (pubkey: string) => string | undefined = () => undefined,
+) {
   const authors: string[] = [];
   const contents: string[] = [];
-  for (const { body } of events)
+  for (const { tag, body } of sections) {
+    const record = EVENT_TAGS.has(tag) ? readEventBody(body) : undefined;
+    if (record) {
+      contents.push(record.request);
+      const author = name(record.pubkey);
+      if (author) authors.push(author);
+      continue;
+    }
+    if (tag !== "buzz-event" && tag !== "buzz-events") continue;
     for (const block of body.split(/\n(?=--- Event \d+ )/)) {
       const from = /^From: (.*)$/m.exec(block)?.[1];
       const start = block.indexOf("\nContent: ");
@@ -134,6 +149,7 @@ export function promptMessage(sections: PromptSection[]) {
       );
       if (from) authors.push(from.replace(/ \((?:npub|hex)[^)]*\)$/, ""));
     }
+  }
   return {
     text: contents.join("\n\n"),
     author: [...new Set(authors)].join(", ") || undefined,
@@ -201,6 +217,8 @@ function configLabels(options: unknown) {
 export function activityTranscript(
   records: readonly Source[],
   scope: TranscriptScope,
+  /** Names an exact-record prompt's author, if known. */
+  name?: (pubkey: string) => string | undefined,
 ): Transcript {
   const events: { id: string; at: number; order: number; event: Json }[] = [];
   for (const record of records) {
@@ -366,7 +384,7 @@ export function activityTranscript(
           .filter(Boolean)
           .join("\n");
         const sections = promptSections(text);
-        const message = promptMessage(sections);
+        const message = promptMessage(sections, name);
         const thread = promptThread(sections);
         if (thread !== undefined) turn.promptThread = thread;
         turn.items.push({

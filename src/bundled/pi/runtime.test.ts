@@ -362,9 +362,10 @@ it("hands an owner's mention to its thread's Pi conversation", async () => {
   });
   const text = String(delivered?.params.text);
   expect(text).toContain(`Thread root: ${root.id}`);
-  expect(text).toContain(`Alice (${alice})`);
+  expect(text).toMatch(/^<thread-context>\n/);
+  expect(text).toContain(`"pubkey":"${alice}"`);
   expect(text).toContain("Build is red");
-  expect(text).toContain("Content: @Pi can you look?");
+  expect(text).toContain('Request: "@Pi can you look?"');
   expect(String(delivered?.params.steer)).toContain("@Pi can you look?");
   expect(String(delivered?.params.instructions)).toContain(self);
   expect(turn.workingUntil).toHaveBeenCalledTimes(1);

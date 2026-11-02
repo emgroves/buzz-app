@@ -10,6 +10,7 @@ import type { EventData, RelayEvent } from "../../features/relay/events";
 import type { RelayData } from "../../features/relay/service";
 import { fakeSpawn, flush } from "./goose-testing";
 import { AcpSession } from "../../features/agent-harness/acp/session";
+import { quoted } from "../../features/agent-harness/turn-records";
 import { AgentSessions } from "./sessions";
 import {
   DEFAULT_CONFIG,
@@ -1109,14 +1110,14 @@ it("shows a turn a reload stopped what it already posted, and to carry on", asyn
   const resumed = g.goose()?.turns[0]?.text ?? "";
   expect(resumed).toContain("Counted to 10");
   expect(resumed).toContain("Looks good so far");
-  expect(resumed).toContain("Content: @Gander count to 60");
+  expect(resumed).toContain(`Request: ${quoted("@Gander count to 60")}`);
   expect(resumed).toContain(RESUMED_PROMPT);
 
   // The session has been shown them, so the thread's next turn is not.
   await g.deliver(inThread("4", "@Gander faster", alice));
   await flush(100);
   const next = g.goose()?.turns[1]?.text ?? "";
-  expect(next).toContain("Content: @Gander faster");
+  expect(next).toContain(`Request: ${quoted("@Gander faster")}`);
   expect(next).not.toContain("Looks good so far");
   expect(next).not.toContain(RESUMED_PROMPT);
 });

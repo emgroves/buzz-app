@@ -2,9 +2,11 @@
 // and shown in the host's turn-transcript model. goose keeps the sessions in
 // its own database; nothing here writes or keeps them.
 import { isMessageTool } from "../../buzz-mcp/session-tools";
+import { readEventBody } from "../../features/agent-harness/turn-records";
 import {
   promptMessage,
   promptSections,
+  STEER,
   type ToolItem,
   type Transcript,
   type TranscriptItem,
@@ -20,7 +22,6 @@ export const TURN_LIMIT = 50;
 const SESSION_LIMIT = 10;
 /** The agent's recent sessions listed. */
 export const RECENT_LIMIT = 30;
-const STEER = "new-message-arrived-while-you-were-working";
 
 type Json = Record<string, unknown>;
 /** A message as goose saves it. */
@@ -67,12 +68,22 @@ const KINDS: Record<string, string> = {
   read_image: "read",
 };
 
-/** A Buzz prompt, or a steer wrapping one, as the turn's opening item. */
-function prompt(id: string, at: number, raw: string, steered: boolean) {
+/** A person's display name, if known. */
+type Names = (pubkey: string) => string | undefined;
+/** A Buzz prompt, or a steer, as the turn's opening item. */
+function prompt(
+  id: string,
+  at: number,
+  raw: string,
+  steered: boolean,
+  name?: Names,
+) {
   let sections = promptSections(raw);
   const steer = sections.find((section) => section.tag === STEER);
-  if (steer) sections = promptSections(steer.body);
-  const { text, author } = promptMessage(sections);
+  // An older steer wraps a whole turn.
+  if (steer && !readEventBody(steer.body))
+    sections = promptSections(steer.body);
+  const { text, author } = promptMessage(sections, name);
   return {
     id,
     at,
@@ -100,6 +111,7 @@ export function gooseTurns(
   messages: readonly Message[],
   conversation: Place & { sessionId: string },
   working: boolean,
+  name?: Names,
 ): TranscriptTurn[] {
   const turns: TranscriptTurn[] = [];
   const tools = new Map<string, ToolItem>();
@@ -136,7 +148,7 @@ export function gooseTurns(
     if (message.role === "user" && !responses.length) {
       const raw = texts(content);
       if (!raw.trim()) return;
-      const item = prompt(id, at, raw, message.metadata?.steer === true);
+      const item = prompt(id, at, raw, message.metadata?.steer === true, name);
       const current = item.steer ? turns.at(-1) : undefined;
       (current ?? turn(id, at, false)).items.push(item);
       last = at;
@@ -433,6 +445,7 @@ export class GooseHistory {
   transcript(
     lookup: Lookup,
     signal: AbortSignal,
+    name?: Names,
   ): Promise<GooseTranscript | undefined> {
     return this.with(signal, async (goose, { resolveDirectory }) => {
       const ids = new Set(lookup.sessionId ? [lookup.sessionId] : []);
@@ -464,6 +477,7 @@ export class GooseHistory {
             read,
             { sessionId, ...(lookup.place ?? { channelId: "" }) },
             sessionId === lookup.working,
+            name,
           ),
         );
       }

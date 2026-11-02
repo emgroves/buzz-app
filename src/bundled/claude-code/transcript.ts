@@ -2,10 +2,12 @@
 // keeps on this computer and shown in the host's turn-transcript model. Claude
 // Code owns the file; nothing here writes or keeps it.
 import { isMessageTool } from "../../buzz-mcp/session-tools";
+import { readEventBody } from "../../features/agent-harness/turn-records";
 import { readFile } from "../../buzz-mcp/app-client";
 import {
   promptMessage,
   promptSections,
+  STEER,
   type ToolItem,
   type Transcript,
   type TranscriptItem,
@@ -22,9 +24,10 @@ export type ClaudeTranscript = Transcript & {
   more: boolean;
   incomplete?: string;
 };
-const STEER = "new-message-arrived-while-you-were-working";
 
 type Json = Record<string, unknown>;
+/** A person's display name, if known. */
+type Names = (pubkey: string) => string | undefined;
 /** One session file's conversation. */
 type Session = Readonly<{
   sessionId: string;
@@ -71,12 +74,19 @@ const KINDS: Record<string, string> = {
   WebSearch: "fetch",
 };
 
-/** A Buzz prompt, or a steer wrapping one, as the turn's opening item. */
-function prompt(id: string, at: number, raw: string): TranscriptItem {
+/** A Buzz prompt, or a steer, as the turn's opening item. */
+function prompt(
+  id: string,
+  at: number,
+  raw: string,
+  name?: Names,
+): TranscriptItem {
   let sections = promptSections(raw);
   const steer = sections.find((section) => section.tag === STEER);
-  if (steer) sections = promptSections(steer.body);
-  const { text, author } = promptMessage(sections);
+  // An older steer wraps a whole turn.
+  if (steer && !readEventBody(steer.body))
+    sections = promptSections(steer.body);
+  const { text, author } = promptMessage(sections, name);
   return {
     id,
     at,
@@ -94,6 +104,7 @@ export function claudeTurns(
   file: string,
   conversation: Session,
   working: boolean,
+  name?: Names,
 ): TranscriptTurn[] {
   const turns: TranscriptTurn[] = [];
   const tools = new Map<string, ToolItem>();
@@ -142,7 +153,7 @@ export function claudeTurns(
       (block) => block.type === "tool_result",
     );
     if (entry.type === "user" && !results.length) {
-      const item = prompt(id, at, text(message.content));
+      const item = prompt(id, at, text(message.content), name);
       const current =
         item.type === "prompt" && item.steer ? turns.at(-1) : undefined;
       (current ?? turn(id, at, false)).items.push(item);
@@ -344,6 +355,7 @@ export async function readTranscript(
   conversation: Conversation,
   working: boolean,
   signal: AbortSignal,
+  nameOf?: Names,
 ): Promise<ClaudeTranscript | undefined> {
   const project = await workspaceProject(spawn, workspace, signal);
   if (!project) return undefined;
@@ -402,6 +414,7 @@ export async function readTranscript(
           ...(conversation.root ? { root: conversation.root } : {}),
         },
         working && name === saved,
+        nameOf,
       ),
     );
   }

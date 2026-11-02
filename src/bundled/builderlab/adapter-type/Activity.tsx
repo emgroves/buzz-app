@@ -11,6 +11,8 @@ import type { RelaySession } from "../../../features/relay/session";
 import { activityTranscript } from "../../../features/agents/activity-transcript";
 import { ActivityTranscript } from "../../../features/agents/ActivityTranscript";
 import type { Agent, AgentViewProps } from "../../../features/agents/service";
+import type { IdentityNameView } from "../../../features/identity-names/service";
+import { useIdentityNames } from "../../../features/identity-names/react";
 
 export type AgentActivity = RelaySession["agentActivity"];
 
@@ -29,6 +31,9 @@ export function createActivityTab(
             ? connection.session.agentActivity
             : undefined
         }
+        names={
+          connection.status === "ready" ? connection.session.names : undefined
+        }
       />
     );
   };
@@ -37,13 +42,16 @@ export function createActivityTab(
 export function ActivityPanel({
   agent,
   activity,
+  names,
 }: {
   agent: Agent;
   /** Absent while the owner's session connects. */
   activity: AgentActivity | undefined;
+  /** Names the people whose messages prompted the turns. */
+  names?: IdentityNameView | undefined;
 }) {
   if (!activity) return <Note>Activity shows once Buzz is connected.</Note>;
-  return <ActivityFeed agent={agent} activity={activity} />;
+  return <ActivityFeed agent={agent} activity={activity} names={names} />;
 }
 
 // Hosted frames don't always name their thread, so turns aren't scoped to the
@@ -51,10 +59,13 @@ export function ActivityPanel({
 function ActivityFeed({
   agent,
   activity,
+  names,
 }: {
   agent: Agent;
   activity: AgentActivity;
+  names: IdentityNameView | undefined;
 }) {
+  const resolve = useIdentityNames(names);
   // The Agent Activity plugin owns the feed's lease; this only reads it.
   const snapshot = useSyncExternalStore(
     activity.subscribe,
@@ -66,8 +77,9 @@ function ActivityFeed({
       activityTranscript(
         snapshot.records.filter((record) => record.agent === agent.pubkey),
         { agent: agent.pubkey },
+        (pubkey) => resolve(pubkey, "") || undefined,
       ),
-    [snapshot.records, agent.pubkey],
+    [snapshot.records, agent.pubkey, resolve],
   );
   if (snapshot.status === "unavailable") return <Note>{UNAVAILABLE}</Note>;
   if (snapshot.status === "disabled")

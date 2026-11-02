@@ -2,7 +2,9 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { eventBody } from "../../../features/agent-harness/turn-records";
 import type { Agent } from "../../../features/agents/service";
+import type { IdentityNameView } from "../../../features/identity-names/service";
 import { ActivityPanel, type AgentActivity } from "./Activity";
 
 afterEach(cleanup);
@@ -65,6 +67,43 @@ function record(
       },
     }),
   };
+}
+
+/** A turn whose prompt is the exact record of one Buzz message. */
+function promptRecord(sender: string) {
+  const body = eventBody(
+    {
+      id: root,
+      pubkey: sender,
+      kind: 9,
+      created_at: 1,
+      content: "go",
+      tags: [],
+    },
+    "go",
+  );
+  const frame = record("t1", "Done");
+  const batch = JSON.parse(frame.plaintext);
+  batch.payload.events.splice(1, 0, {
+    ...batch.payload.events[0],
+    seq: 9,
+    kind: "acp_write",
+    payload: {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session/prompt",
+      params: {
+        sessionId: "S",
+        prompt: [
+          {
+            type: "text",
+            text: `<buzz-event type="mention">\n${body}\n</buzz-event>`,
+          },
+        ],
+      },
+    },
+  });
+  return { ...frame, plaintext: JSON.stringify(batch) };
 }
 
 type Snapshot = ReturnType<AgentActivity["snapshot"]>;
@@ -152,4 +191,19 @@ it("says when older activity was dropped", () => {
   expect(
     screen.getByText("Older activity was dropped to save memory."),
   ).toBeInTheDocument();
+});
+
+it("names the person whose message prompted a turn", () => {
+  const { activity } = fakeActivity({
+    records: [promptRecord(other)] as unknown as Snapshot["records"],
+  });
+  const names = {
+    snapshot: () => 0,
+    subscribe: () => () => {},
+    resolve: (key: string, fallback?: string) =>
+      key === other ? "Salman" : fallback,
+  } as unknown as IdentityNameView;
+  render(<ActivityPanel agent={agent} activity={activity} names={names} />);
+  expect(screen.getByText("Salman")).toBeInTheDocument();
+  expect(screen.getByText("go")).toBeInTheDocument();
 });
