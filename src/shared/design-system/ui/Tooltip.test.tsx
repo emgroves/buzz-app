@@ -238,4 +238,30 @@ describe("hover intent", () => {
     await rest(0);
     expect(trigger).toHaveAttribute("data-popup-open");
   });
+
+  it("ignores a hover close of a focus-opened preview the pointer never visited", async () => {
+    render(
+      <PreviewCard
+        trigger={<a href="#profile">Profile</a>}
+        aria-label="Preview"
+      >
+        Preview body
+      </PreviewCard>,
+    );
+    const trigger = screen.getByRole("link", { name: "Profile" });
+    act(() => trigger.focus());
+    await rest(0);
+    expect(trigger).toHaveAttribute("data-popup-open");
+    // Base UI's safe-polygon close replays the mouseleave that armed it, even
+    // one left over from an earlier open of the same trigger.
+    fireEvent.mouseLeave(trigger);
+    fireEvent.mouseMove(document.body);
+    await rest(100);
+    expect(trigger).toHaveAttribute("data-popup-open");
+    fireEvent.mouseEnter(trigger);
+    fireEvent.mouseLeave(trigger);
+    fireEvent.mouseMove(document.body);
+    await rest(100);
+    expect(trigger).not.toHaveAttribute("data-popup-open");
+  });
 });

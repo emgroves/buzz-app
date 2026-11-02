@@ -1,6 +1,7 @@
 import { PreviewCard as BasePreviewCard } from "@base-ui/react/preview-card";
 import {
   useCallback,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactElement,
@@ -88,6 +89,11 @@ export function PreviewCard({
   const pointer = useRef<{ x: number; y: number; time: number } | null>(null);
   // A hover close was refused because the pointer never left the trigger.
   const heldLeave = useRef(false);
+  // The pointer has been on the trigger during the current open.
+  const hovered = useRef(false);
+  useLayoutEffect(() => {
+    if (open && triggerRef.current?.matches(":hover")) hovered.current = true;
+  }, [open]);
   const promote = useCallback((positioner: HTMLDivElement) => {
     // Join the top layer after the hovered row's floating actions, but not
     // above an unrelated interactive overlay. The portal is never inside one.
@@ -211,8 +217,29 @@ export function PreviewCard({
           details.cancel();
           return;
         }
+        // Base UI's hover close replays the mouseleave that armed it. Its
+        // safe-polygon handler outlives a close made through `open`, such as
+        // an action in the card closing it, and the next pointer move anywhere
+        // replays that leave: 75 ms later it would close a preview that
+        // keyboard focus has since reopened. The pointer leaving a trigger it
+        // has not been on during this open is not a leave of this preview.
+        if (
+          !next &&
+          details.reason === "trigger-hover" &&
+          event?.type === "mouseleave" &&
+          !hovered.current &&
+          trigger &&
+          event.target instanceof Node &&
+          trigger.contains(event.target)
+        ) {
+          details.cancel();
+          return;
+        }
         onOpenChange?.(next, details);
         if (details.isCanceled) return;
+        hovered.current =
+          next &&
+          (details.reason === "trigger-hover" || !!trigger?.matches(":hover"));
         triggerPlace.current = next
           ? (triggerRef.current?.getBoundingClientRect() ?? null)
           : null;
@@ -244,6 +271,7 @@ export function PreviewCard({
         ref={rememberTrigger}
         onMouseEnter={() => {
           heldLeave.current = false;
+          hovered.current = true;
         }}
         onFocus={(event) => {
           focusedTrigger.current = event.target as HTMLElement;
