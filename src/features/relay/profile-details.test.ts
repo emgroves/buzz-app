@@ -391,6 +391,28 @@ it("records identities a completed read found no profile for, until one arrives"
   }
 });
 
+it("background enrichment does not reread a known absence until reconnect", async () => {
+  const other = keypair();
+  const read = vi.fn(async () => [profile(user, { name: "Mic" })]);
+  const directory = createProfileDirectory({ read });
+  try {
+    await directory.ensure([user.pubkey, other.pubkey], "background");
+    expect(directory.queries.unnamed?.()).toEqual(new Set([other.pubkey]));
+    await directory.ensure([user.pubkey, other.pubkey], "background");
+    expect(read).toHaveBeenCalledTimes(1);
+    // A demanded read still asks again.
+    await directory.ensure([other.pubkey], "foreground");
+    expect(read).toHaveBeenCalledTimes(2);
+    // The live route may have missed a kind 0 while offline.
+    await directory.reconnect();
+    read.mockClear();
+    await directory.ensure([other.pubkey], "background");
+    expect(read).toHaveBeenCalledTimes(1);
+  } finally {
+    directory.dispose();
+  }
+});
+
 it("records no absence from a read that filled its page", async () => {
   const other = keypair();
   // A relay that keeps every kind 0 can fill the page from one author. The
