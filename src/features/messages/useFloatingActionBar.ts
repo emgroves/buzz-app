@@ -175,7 +175,9 @@ export function useFloatingActionBar(
     // A preview card joins the top layer after a toolbar that is already
     // shown. Hiding that toolbar while the card is open would show it again
     // above the card on the next hover, so this row's open preview keeps it.
-    // The card's close releases it.
+    // The card's close releases it. The selector finds a preview trigger with
+    // any popup open, not only its card: MessageLink's context menu shares
+    // the link, so that menu holds the toolbar too, hidden behind the menu.
     let shown = false;
     const update = (focused = keyboardFocus()) => {
       const ownsPopup = !!bar.querySelector(

@@ -88,6 +88,8 @@ export function PreviewCard({
   const pointer = useRef<{ x: number; y: number; time: number } | null>(null);
   // A hover close was refused because the pointer never left the trigger.
   const heldLeave = useRef(false);
+  // The card reopened during its exit, keeping its place in the top layer.
+  const rejoin = useRef(false);
   const promote = useCallback((positioner: HTMLDivElement) => {
     // Join the top layer after the hovered row's floating actions, but not
     // above an unrelated interactive overlay. The portal is never inside one.
@@ -95,7 +97,14 @@ export function PreviewCard({
     const update = () => {
       const trigger = triggerRef.current;
       if (trigger && behindActiveOverlay(trigger)) positioner.hidePopover?.();
-      else positioner.showPopover?.();
+      else if (rejoin.current && popupRef.current?.hasAttribute("data-open")) {
+        // The reopening has committed, with any row actions that the same
+        // pointer move showed again. Join again, after them. A manual
+        // popover keeps focus through this.
+        rejoin.current = false;
+        positioner.hidePopover?.();
+        positioner.showPopover?.();
+      } else positioner.showPopover?.();
     };
     update();
     const stopObserving = observeOverlays(update);
@@ -222,6 +231,8 @@ export function PreviewCard({
           popupRef.current?.contains(document.activeElement)
             ? popupRef.current
             : null;
+        rejoin.current =
+          next && !!popupRef.current?.hasAttribute("data-closed");
       }}
       onOpenChangeComplete={(next) => {
         if (next) return;
