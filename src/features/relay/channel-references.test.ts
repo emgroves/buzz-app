@@ -199,6 +199,30 @@ it("names a public channel the viewer left, and looks it up until it is readable
   expect(h.pending).toHaveLength(0);
 });
 
+it("rechecks a mounted link to a left public channel after five minutes while it stays unreadable", async () => {
+  const h = await setup();
+  h.emit([roster(relay, MINE, [], 1_700_000_001)]);
+  await vi.waitFor(() => expect(h.channels.get?.(MINE)).toBeUndefined());
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const link = renderHook(() => useChannelReference(h.channels, MINE));
+  await flush();
+  // The lookup still admits no reading of it.
+  await h.lookup([MINE], []);
+  expect(link.result.current).toMatchObject({
+    state: "found",
+    name: "mine",
+    readable: false,
+  });
+  expect(link.result.current).not.toHaveProperty("looking");
+  await h.advance(5 * 60_000 - 1);
+  expect(h.pending).toHaveLength(0);
+  // Nothing re-renders the link: the store's own wake-up rechecks it.
+  await h.advance(1);
+  await h.lookup([MINE], [open(MINE, "mine")]);
+  expect(link.result.current).toMatchObject({ state: "found", name: "mine" });
+  expect(link.result.current).not.toHaveProperty("readable");
+});
+
 it("forgets withheld answers when the session cache is cleared", async () => {
   const h = await setup();
   h.channels.refer?.(SECRET);
