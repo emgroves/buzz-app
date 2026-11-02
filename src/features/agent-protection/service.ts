@@ -32,10 +32,15 @@ export type ProtectionRequest = ProtectionAction &
     runtime: string;
     policy: unknown;
   }>;
+/** A denial its provider explained, for Buzz to show people. */
+export type ProtectionDenial = Readonly<{ allowed: false; reason: string }>;
 export type ProtectionProvider = Readonly<{
   phases?(policy: unknown): ProtectionPhases;
   /** Checks one immutable action. Failure, removal and cancellation deny it. */
-  check(request: ProtectionRequest, signal: AbortSignal): Promise<boolean>;
+  check(
+    request: ProtectionRequest,
+    signal: AbortSignal,
+  ): Promise<boolean | ProtectionDenial>;
   processProtection: ProcessProtection;
   /** Runtime owner to a process declared by this protection plugin. */
   runtimeProcesses?: Readonly<Record<string, string>>;
@@ -52,6 +57,29 @@ export type AgentProtection = Readonly<{
   assertAvailable(): void;
   check(action: ProtectionAction, signal: AbortSignal): Promise<void>;
 }>;
+/** Its message is all the agent sees; `reason` is the provider's explanation,
+ * for people. */
+export class ProtectionDenied extends Error {
+  readonly reason: string | undefined;
+  constructor(reason?: string) {
+    super("Agent action denied by its protection policy");
+    this.reason = reason;
+  }
+}
+// One bounded line of a provider's explanation, or none.
+const explanation = (value: unknown) => {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Object.keys(value).sort().join() !== "allowed,reason"
+  )
+    return undefined;
+  const { allowed, reason } = value as Record<string, unknown>;
+  if (allowed !== false || typeof reason !== "string") return undefined;
+  const line = [...reason.replace(/[\p{C}\p{Z}\s]+/gu, " ").trim()];
+  if (!line.length) return undefined;
+  return line.length > 300 ? `${line.slice(0, 299).join("")}…` : line.join("");
+};
 export type ProtectionDefaults = {
   revision: number;
   defaults: ProtectionBinding | null;
@@ -430,7 +458,7 @@ export class AgentProtectionService extends Service {
           signal.addEventListener("abort", stop, { once: true });
           if (signal.aborted) stop();
         });
-        let allowed = false;
+        let allowed: unknown = false;
         const timeout = setTimeout(
           () =>
             deadline.abort(
@@ -453,8 +481,7 @@ export class AgentProtectionService extends Service {
           signal.removeEventListener("abort", stop);
         }
         signal.throwIfAborted();
-        if (allowed !== true)
-          throw new Error("Agent action denied by its protection policy");
+        if (allowed !== true) throw new ProtectionDenied(explanation(allowed));
       },
     });
   }

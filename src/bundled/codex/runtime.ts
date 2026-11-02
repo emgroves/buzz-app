@@ -185,6 +185,9 @@ type Server = {
   opening: Promise<AppServer>;
   /** Threads this process has loaded, and the agent, by key, each belongs to. */
   threads: Map<string, AgentKey>;
+  /** Starts a turn of a thread. What it returns takes why Auto-decide refused
+   * that turn's model input, if it said. */
+  explainer?(threadId: string): () => string | undefined;
 };
 export type SessionView = { key: string; status: string; detail: string };
 /** A saved binding, newest first, for the owner's transcript list, with the
@@ -219,6 +222,13 @@ const titlePrompt = (text: string) =>
   `Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request.\n\nUser prompt:\n${[...text].slice(0, 800).join("")}`;
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
+/** One-line `text` as inline code, so none of it renders as a link or markup.
+ * Its fence is longer than any backtick run inside. */
+const code = (text: string) => {
+  const runs = text.match(/`+/g) ?? [];
+  const fence = "`".repeat(Math.max(0, ...runs.map((run) => run.length)) + 1);
+  return `${fence} ${text} ${fence}`;
+};
 /** Puts back the notes a request took, for a turn that never took it in. */
 function restoreNotes(request: Request) {
   if (request.notes)
@@ -624,6 +634,7 @@ export class CodexRuntime {
       server.opening = (async () => {
         await prior?.rpc.close();
         const bridge = await nativeProtectionBridge(serveMcp, protection);
+        server.explainer = bridge.explainer;
         rpc.onMessage((wire) => {
           if (wire.method === "connection/closed") {
             void bridge.close();
@@ -1748,6 +1759,7 @@ export class CodexRuntime {
         );
     });
     let hookBridge: Awaited<ReturnType<typeof openHookBridge>> | undefined;
+    let explain: (() => string | undefined) | undefined;
     try {
       const rpc = await server.opening;
       signal.throwIfAborted();
@@ -1808,6 +1820,8 @@ export class CodexRuntime {
           });
       } else started = await start();
       active.threadId = started.thread.id;
+      // A refusal outside this turn does not explain how it ends.
+      explain = server.explainer?.(active.threadId);
       bridge?.bind(active.threadId);
       server.threads.set(active.threadId, agent.key);
       signal.throwIfAborted();
@@ -1919,8 +1933,9 @@ export class CodexRuntime {
           await server.rpc.close();
         }
       }
+      const why = explain?.();
       if (!entry.abort.signal.aborted) {
-        const reason = `Codex could not finish: ${message(error)}.`;
+        const reason = `Codex could not finish: ${message(error)}.${why ? ` Reason: ${code(why)}` : ""}`;
         await this.publish(active.reply, reason).catch((failure) =>
           console.error("Codex could not publish its failure", failure),
         );

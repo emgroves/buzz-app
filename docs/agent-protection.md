@@ -46,6 +46,14 @@ An installed plugin injects `agentProtection`, then registers
 plugin ID; replacing or unloading it revokes the old registration and pending
 checks. Only the exact boolean `true` permits an action. Exceptions, cancellation,
 missing providers, invalid/oversized requests and the bounded deadline deny it.
+A provider may instead deny with exactly `{allowed: false, reason}` to explain
+the denial to people. The denial returned to the agent stays generic; Buzz reduces
+the reason to one line of at most 300 characters. When such a denial of model
+input ends a protected Codex turn, its "Codex could not finish" message in the
+thread quotes the reason as inline code, so links and markup in it do not
+render. The reason is the provider's text, often written by a reviewer model
+that may quote the denied input. That message is ordinary thread content, which
+later turns and other agents read.
 
 `runtimeProcesses` maps runtime owner IDs, such as `buzz.codex`, to processes in
 the protecting plugin's manifest. A bound `AgentProtection.spawn(options)` selects

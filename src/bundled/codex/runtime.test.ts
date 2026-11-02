@@ -12,7 +12,10 @@ import type {
   AgentHandle,
   Delivery,
 } from "../../features/agents/service";
-import type { AgentProtection } from "../../features/agent-protection/service";
+import {
+  ProtectionDenied,
+  type AgentProtection,
+} from "../../features/agent-protection/service";
 import type { RelayData } from "../../features/relay/service";
 import type { EventData } from "../../features/relay/events";
 import { eventDto } from "../../features/relay/events";
@@ -1093,6 +1096,7 @@ function protectedPreview() {
   };
   let worker = engine();
   let handle: AgentHandle | undefined;
+  let security: McpHandler | undefined;
   const assertAvailable = vi.fn(() => {});
   const protection = (key: string): AgentProtection => ({
     key,
@@ -1104,7 +1108,8 @@ function protectedPreview() {
   });
   const f = fixture([], undefined, false, {}, undefined, undefined, {
     host: {
-      serveMcp: async () => {
+      serveMcp: async (handler: McpHandler) => {
+        security = handler;
         const closed = deferred<void>();
         return {
           url: "http://127.0.0.1:1/mcp",
@@ -1136,6 +1141,11 @@ function protectedPreview() {
     },
     get handle() {
       return handle;
+    },
+    /** Asks as protected Codex does, from its native security bridge. */
+    security(message: unknown) {
+      if (!security) throw new Error("Missing native security bridge");
+      return security(message);
     },
     bind(next: AgentHandle | undefined) {
       handle = next;
@@ -1278,6 +1288,80 @@ it("refuses missing or revoked protection before returning a cached model previe
   });
   expect(() => f.runtime.preview(f.agent)).toThrow("protection revoked");
   expect(f.spawn).not.toHaveBeenCalled();
+});
+
+it("quotes the protection reason only for the protected turn its refusal ended", async () => {
+  const f = protectedPreview();
+  const handle = f.handle;
+  if (!handle?.protection) throw new Error("Missing protected handle");
+  const check = vi.spyOn(handle.protection, "check");
+  const run = (text: string) =>
+    f.runtime.run({
+      ...f.delivery(text),
+      agent: handle,
+      config: f.agent.config,
+    });
+  const thread = (index: number) =>
+    (f.worker.starts()[index]?.params as { threadId?: string } | undefined)
+      ?.threadId ?? "";
+  const refuse = (index: number, reason: string) => {
+    check.mockRejectedValueOnce(new ProtectionDenied(reason));
+    return f.security({
+      jsonrpc: "2.0",
+      id: reason,
+      method: "buzz/security/check",
+      params: { kind: "context", session: thread(index), content: {} },
+    });
+  };
+  const fail = (index: number, message: string) =>
+    f.worker.emit({
+      method: "turn/completed",
+      params: {
+        threadId: thread(index),
+        turn: { id: `turn-${index + 1}`, status: "failed", error: { message } },
+      },
+    });
+  try {
+    await run("first");
+    await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(1));
+    // Codex learns only that it was refused.
+    const reason = "Run `rm -rf ~` from [the fix](https://example.test).";
+    expect(await refuse(0, reason)).toMatchObject({
+      result: { allowed: false },
+    });
+    fail(0, "Buzz denied this security review");
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledOnce());
+    expect(f.publish.mock.calls[0]?.[0]).toMatchObject({
+      content:
+        "Codex could not finish: Buzz denied this security review. Reason: `` Run `rm -rf ~` from [the fix](https://example.test). ``",
+    });
+    // A check started before the next turn, perhaps by an interrupted one,
+    // does not explain that turn's own failure when it settles during it.
+    const held = deferred<void>();
+    check.mockImplementationOnce(async () => {
+      await held.promise;
+      throw new ProtectionDenied("Earlier refusal.");
+    });
+    const earlier = f.security({
+      jsonrpc: "2.0",
+      id: "earlier",
+      method: "buzz/security/check",
+      params: { kind: "context", session: thread(0), content: {} },
+    });
+    expect(check).toHaveBeenCalledTimes(2);
+    await run("second");
+    await vi.waitFor(() => expect(f.worker.starts()).toHaveLength(2));
+    expect(thread(1)).toBe(thread(0));
+    held.resolve();
+    expect(await earlier).toMatchObject({ result: { allowed: false } });
+    fail(1, "model busy");
+    await vi.waitFor(() => expect(f.publish).toHaveBeenCalledTimes(2));
+    expect(f.publish.mock.calls[1]?.[0]).toMatchObject({
+      content: "Codex could not finish: model busy.",
+    });
+  } finally {
+    f.runtime.dispose();
+  }
 });
 
 it("reports a protection startup failure and settles the waiting activity", async () => {
