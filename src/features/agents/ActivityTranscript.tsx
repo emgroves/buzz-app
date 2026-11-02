@@ -81,9 +81,10 @@ const toolName = (item: ToolItem) => line(item.title) || "tool";
 /** The first location, unless the adapter's title already names it. */
 const toolPath = (item: ToolItem) =>
   item.paths[0] && !item.title.includes(item.paths[0]) ? item.paths[0] : "";
-const thread = (turn: TranscriptTurn) =>
+/** A channel turn is labelled only where the label opens the channel. */
+const thread = (turn: TranscriptTurn, linked: boolean) =>
   turn.threadRootId === null
-    ? turn.channelId
+    ? linked
       ? "Channel"
       : ""
     : turn.threadRootId
@@ -183,16 +184,15 @@ function Turn({
       : turn.endedAt
         ? "Completed"
         : "Status unknown";
-  const place = thread(turn);
   const { channelId, threadRootId } = turn;
   // An unknown thread is not opened as its channel.
   const open =
     openConversation && channelId && threadRootId !== undefined
       ? () => openConversation(channelId, threadRootId ?? undefined)
       : undefined;
+  const place = thread(turn, !!open);
   const facts = [
     turn.endedAt ? duration(turn.endedAt - turn.startedAt) : "",
-    place,
     ...turn.config,
     turn.source === "heartbeat" ? "heartbeat" : "",
     turn.newSession ? "new session" : "",
@@ -221,17 +221,20 @@ function Turn({
           </>
         )}
         <span data-state={turn.error ? "error" : state}>{status}</span>
-        {facts.map((fact) => (
-          <span key={fact}>
+        {place && (
+          <span>
             {" · "}
-            {fact === place && open ? (
+            {open ? (
               <Button variant="link" size="inline" onClick={open}>
-                {fact}
+                {place}
               </Button>
             ) : (
-              fact
+              place
             )}
           </span>
+        )}
+        {facts.map((fact) => (
+          <span key={fact}> · {fact}</span>
         ))}
       </header>
       {turn.partial && (

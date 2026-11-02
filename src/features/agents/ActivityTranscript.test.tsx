@@ -359,7 +359,7 @@ it("keeps different threads distinguishable when showing all conversations", () 
   expect(screen.getByText("· Thread bbbbbbbb")).toBeVisible();
 });
 
-it("opens a turn's thread or channel from its label, keeping labels it can't open as text", () => {
+it("opens a turn's thread or channel from its label, keeping thread labels it can't open as text", () => {
   const turn = (
     turnId: string,
     channelId: string | null,
@@ -401,7 +401,8 @@ it("opens a turn's thread or channel from its label, keeping labels it can't ope
   expect(screen.getAllByRole("button")).toHaveLength(2);
   expect(screen.getByText("· Thread unknown")).toBeInTheDocument();
   expect(screen.getByText("· Thread bbbbbbbb")).toBeInTheDocument();
-  // A host that can't open conversations shows the same labels as text.
+  // A host that can't open conversations shows thread labels as text and
+  // leaves channel turns unlabelled.
   view.rerender(
     <ActivityTranscript
       transcript={transcript}
@@ -411,7 +412,7 @@ it("opens a turn's thread or channel from its label, keeping labels it can't ope
   );
   expect(screen.queryAllByRole("button")).toEqual([]);
   expect(screen.getByText("· Thread aaaaaaaa")).toBeInTheDocument();
-  expect(screen.getByText("· Channel")).toBeInTheDocument();
+  expect(screen.queryByText(/Channel/)).toBeNull();
   expect(openConversation).toHaveBeenCalledTimes(2);
 });
 
